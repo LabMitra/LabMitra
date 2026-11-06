@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 64" role="img" aria-label="LabMitra">
+  <defs>
+    <linearGradient id="lm-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#123b69"/>
+      <stop offset="1" stop-color="#1d70b7"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="16" fill="url(#lm-bg)"/>
+  <path d="M32 10.5C32 10.5 16.5 27.5 16.5 38.5a15.5 15.5 0 0 0 31 0C47.5 27.5 32 10.5 32 10.5Z" fill="#fff"/>
+  <path d="M23.2 37.5c.2-4.4 2.6-9 5.4-13" fill="none" stroke="#cfe3f6" stroke-width="2.6" stroke-linecap="round"/>
+  <rect x="29.6" y="32" width="4.8" height="15" rx="2.2" fill="#13834e"/>
+  <rect x="24.5" y="37.1" width="15" height="4.8" rx="2.2" fill="#13834e"/>
+  <text x="80" y="42" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="34" font-weight="800" letter-spacing="-0.5">
+    <tspan fill="#123b69">Lab</tspan><tspan fill="#1d70b7">Mitra</tspan>
+  </text>
+  <text x="81" y="58" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="10.5" font-weight="600" letter-spacing="1.6" fill="#64778d">DIAGNOSTICS AT HOME</text>
+</svg>

@@ -1,0 +1,88 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="theme-color" content="#123b69"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>LabMitra Admin Dashboard</title><link rel="icon" type="image/svg+xml" href="../../assets/logo-mark.svg?v=1793937218"><link rel="stylesheet" href="../../assets/style.css?v=1793937218"></head><body>
+<div class="dashboard">
+<aside class="side"><a class="brand" href="../../index.html"><img class="logo" src="../../assets/logo-mark.svg?v=1793937218" alt="" width="38" height="38"><span class="wordmark">Lab<b>Mitra</b></span></a>
+<nav>
+  <a href="#overview" data-tab-link="overview">Overview</a>
+  <a href="#bookings" data-tab-link="bookings">Bookings</a>
+  <a href="#cash" data-tab-link="cash">Cash</a>
+  <a href="#users" data-tab-link="users">Users</a>
+  <a href="#pricing" data-tab-link="pricing">Test Pricing</a>
+  <a href="../../index.html" target="_blank">Patient website ↗</a>
+  <a href="#" id="logout">Logout</a>
+</nav></aside>
+
+<main class="content">
+
+<!-- OVERVIEW -->
+<section data-tab="overview">
+  <div class="dash-top"><div><h1 class="page-title">Dashboard Overview</h1><div class="sub">LabMitra operations · Raipur launch</div></div><span class="pill green">LIVE</span></div>
+  <div class="stats">
+    <div class="stat"><span>Today's Bookings</span><b id="todayCount">0</b><em>Bookings created today</em></div>
+    <div class="stat"><span>Total Bookings</span><b id="bookingCount">0</b><em>All time</em></div>
+    <div class="stat"><span>Paid Revenue</span><b id="revenue">₹0</b><em>All paid bookings</em></div>
+    <div class="stat"><span>Cash Revenue</span><b id="cashRevenue">₹0</b><em>Collected by staff</em></div>
+    <div class="stat"><span>Online Revenue</span><b id="onlineRevenue">₹0</b><em>Via Razorpay</em></div>
+    <div class="stat"><span>Pending Collections</span><b id="pendingCount">0</b><em>Confirmed / assigned</em></div>
+    <div class="stat"><span>Samples at Lab</span><b id="labCount">0</b><em>Handover / processing</em></div>
+    <div class="stat"><span>Reports Pending</span><b id="repPending">0</b><em>Waiting for PDF</em></div>
+    <a class="stat" href="#cash"><span>Cash with staff</span><b id="cashWithStaff">₹0</b><em>Not yet handed to office →</em></a>
+  </div>
+  <section class="panel"><div class="panel-head"><h2>Latest bookings</h2><a href="#bookings" class="muted" style="font-size:12px">See all →</a></div><div class="table-wrap"><table><thead><tr><th>Booking Ref</th><th>Patient</th><th>Collection</th><th>Amount</th><th>Status</th><th>Payment</th></tr></thead><tbody id="recentRows"></tbody></table></div></section>
+  <section class="panel"><div class="panel-head"><h2>Quick Management</h2></div><div class="quick"><a href="#bookings">Manage bookings</a><a href="#cash">Cash &amp; handovers</a><a href="#pricing">Manage test prices</a></div></section>
+</section>
+
+<!-- BOOKINGS -->
+<section data-tab="bookings" hidden>
+  <div class="dash-top"><div><h1 class="page-title">Bookings</h1><div class="sub">Change a booking's status or payment from the dropdowns. Changes save instantly. Choosing "Cancelled" opens the cancel screen so online payments get refunded.</div></div></div>
+  <section class="panel export-bar"><b>Export to CSV</b>
+    <select id="expBy"><option value="collect">by collection date</option><option value="booked">by booking date</option></select>
+    <label>From <input type="date" id="expFrom"></label><label>To <input type="date" id="expTo"></label>
+    <button type="button" class="green" id="exportBookings">Download CSV</button>
+    <span class="muted" style="font-size:12px">Leave dates empty for all bookings. Opens in Excel or Google Sheets.</span>
+  </section>
+  <section class="panel"><div class="table-wrap"><table class="admin-table"><thead><tr><th>Booking Ref</th><th>Patient</th><th>Tests</th><th>Collection</th><th>Amount</th><th>Status</th><th>Payment</th><th>Report</th></tr></thead><tbody id="bookingRows"></tbody></table></div></section>
+</section>
+
+<!-- CASH -->
+<section data-tab="cash" hidden>
+  <div class="dash-top"><div><h1 class="page-title">Cash</h1><div class="sub">Who collected cash, what they handed to the office, and what's still with them. Confirm each handover when you actually receive the money.</div></div></div>
+  <div class="stats" id="cashTiles"></div>
+  <section class="panel"><div class="panel-head"><h2>By person</h2><button type="button" class="light sm" id="exportCashPeople">Download CSV</button></div><p class="muted" style="font-size:12px;margin:10px 19px 0">Based on the name staff enter when marking cash collected.</p><div class="table-wrap"><table class="admin-table"><thead><tr><th>Name</th><th>Cash jobs</th><th>Collected</th><th>Handed over</th><th>Still with them</th></tr></thead><tbody id="cashPeople"></tbody></table></div></section>
+  <section class="panel"><div class="panel-head"><h2>Handovers</h2><button type="button" class="light sm" id="exportHandovers">Download CSV</button></div><div class="table-wrap"><table class="admin-table"><thead><tr><th>When</th><th>Handed by</th><th>Amount</th><th>Note</th><th>Status</th></tr></thead><tbody id="cashHandovers"></tbody></table></div></section>
+</section>
+
+<!-- USERS -->
+<section data-tab="users" hidden>
+  <div class="dash-top"><div><h1 class="page-title">Users</h1><div class="sub">Every account on LabMitra, with contact details and saved addresses.</div></div><span class="pill blue" id="userCount">0 users</span></div>
+  <div class="users-tools">
+    <input id="userSearch" placeholder="Search by name, phone, email or address...">
+    <select id="userRole"><option value="all">All roles</option><option value="patient">Patients</option><option value="staff">Staff</option><option value="admin">Admins</option></select>
+  </div>
+  <section class="panel"><div class="table-wrap"><table class="admin-table"><thead><tr><th>Name</th><th>Age / Gender</th><th>Phone</th><th>Email</th><th>Address</th><th>Bookings</th><th>Joined</th></tr></thead><tbody id="userRows"></tbody></table></div></section>
+</section>
+
+<!-- TEST PRICING -->
+<section data-tab="pricing" hidden>
+  <div class="dash-top"><div><h1 class="page-title">Test Pricing</h1><div class="sub">Edit prices and details, or hide a test from the website by unticking "Active".</div></div></div>
+  <section class="panel" style="padding:18px 19px"><h2 style="font-size:17px;margin:0 0 4px">Booking slots</h2>
+    <p class="sub" style="margin-top:0">How many bookings each time slot can take. Full slots can't be picked on the booking page.</p>
+    <form id="slotCapForm" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap"><div><label>Max bookings per slot</label><input name="cap" type="number" min="1" value="5" style="width:140px"></div><button class="green">Save</button></form>
+  </section>
+  <section class="panel"><div class="table-wrap"><table><thead><tr><th>Test name</th><th>Category</th><th>Price ₹</th><th>MRP ₹</th><th>Report time</th><th>Prep / fasting instructions</th><th>Active</th><th></th></tr></thead><tbody id="testRows"></tbody></table></div></section>
+  <section class="panel" style="padding:18px 19px"><h2 style="font-size:17px;margin:0 0 4px">Add a new test</h2>
+    <form id="newTestForm"><div class="form-grid">
+      <div><label>Test name</label><input name="name" required placeholder="e.g. Iron Studies"></div>
+      <div><label>Category</label><input name="category" required placeholder="e.g. Blood Tests"></div>
+      <div><label>Price ₹</label><input name="price" type="number" min="0" required></div>
+      <div><label>MRP ₹</label><input name="mrp" type="number" min="0" required></div>
+      <div><label>Sample</label><input name="sample" value="Blood" required></div>
+      <div><label>Report time</label><input name="turnaround" value="24 hours" required></div>
+    </div>
+    <label>Prep / fasting instructions (optional)</label><input name="instructions" placeholder="e.g. Fast for 10-12 hours before the sample (water is fine).">
+<button class="green" style="margin-top:16px">Add test</button></form>
+  </section>
+</section>
+
+</main></div>
+<div class="toast"></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script><script src="../../assets/supabase.js"></script><script src="../../assets/app.js?v=1793937218"></script></body></html>
