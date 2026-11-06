@@ -283,7 +283,29 @@ function memberPicker(f,c){const root=$("#memberPicker");if(!root)return{selecte
   const draw=()=>{root.innerHTML=chip("self","Myself",c.profile.full_name||"You",false)
     +members.map(m=>chip(m.id,m.name,[m.relation,ageText(m.age,m.age_unit)].filter(Boolean).join(" · "),true)).join("")
     +'<div class="member-chip add" data-add-member role="button" tabindex="0"><b>+ Add a member</b><small>Parent, child, newborn…</small></div>'};
-  const pick=id=>{sel=id;draw();fill()};
+  // "Save changes": write what's typed back to the profile (Myself) or to the saved member.
+  const stored=()=>{const m=members.find(x=>x.id===sel);
+    return m?{name:m.name||"",phone:m.phone||"",age:m.age??"",unit:m.age_unit||"years",gender:m.gender||""}
+            :{name:c.profile.full_name||"",phone:c.profile.phone||"",age:c.profile.age??"",unit:"years",gender:c.profile.gender||""}};
+  const current=()=>({name:f.name.value.trim(),phone:f.phone.value.replace(/[^\d]/g,""),age:f.age.value===""?"":+f.age.value,unit:f.ageUnit.value,gender:f.gender.value});
+  const differs=()=>{const a=stored(),b=current();return a.name!==b.name||String(a.phone).replace(/[^\d]/g,"")!==b.phone||String(a.age)!==String(b.age)||(sel!=="self"&&a.unit!==b.unit)||a.gender!==b.gender};
+  const updateBar=()=>{const bar=$("#savePerson");if(!bar)return;const m=members.find(x=>x.id===sel);
+    bar.hidden=!differs();$("#savePersonText").textContent=m?`Update ${m.name}'s saved details?`:"Update your saved details?"};
+  const savePerson=async quiet=>{const v=current(),m=members.find(x=>x.id===sel);
+    if(!v.name){if(!quiet)toast("Enter a name first",false);return false}
+    if(v.phone&&(v.phone.length<10||v.phone.length>13)){if(!quiet)toast("Enter a valid mobile number",false);return false}
+    if(v.age!==""&&(v.age<0||v.age>AGE_MAX[v.unit])){if(!quiet)toast(`Age must be 0–${AGE_MAX[v.unit]} ${v.unit}`,false);return false}
+    if(m){const patch={name:v.name,phone:v.phone||null,age:v.age===""?null:v.age,age_unit:v.unit,gender:v.gender||null};
+      const{error}=await sb.from("members").update(patch).eq("id",m.id);if(error){if(!quiet)fail(error);return false}
+      Object.assign(m,patch)}
+    else{// Your own profile stores age in years only.
+      const patch={full_name:v.name,phone:v.phone||null,gender:v.gender||null};if(v.unit==="years")patch.age=v.age===""?null:v.age;
+      const{error}=await sb.from("profiles").update(patch).eq("id",c.user.id);if(error){if(!quiet)fail(error);return false}
+      Object.assign(c.profile,patch)}
+    draw();updateBar();if(!quiet)toast(m?`${v.name}'s details saved`:"Saved to your profile");return true};
+  const saveBtn=$("#savePersonBtn");if(saveBtn)saveBtn.onclick=async()=>{saveBtn.disabled=true;await savePerson(false);saveBtn.disabled=false};
+  ["name","phone","age"].forEach(n=>f[n].addEventListener("input",updateBar));["ageUnit","gender"].forEach(n=>f[n].addEventListener("change",updateBar));
+  const pick=id=>{sel=id;draw();fill();updateBar()};
   const addDialog=()=>{const body=openModal("Add a family member",`<div class="form-grid">
       <div><label>Full name</label><input id="mmName" placeholder="e.g. Kamla Devi"></div>
       <div><label>Relation</label><select id="mmRel">${RELATIONS.map(r=>`<option>${r}</option>`).join("")}</select></div>
@@ -312,9 +334,10 @@ function memberPicker(f,c){const root=$("#memberPicker");if(!root)return{selecte
     const ch=e.target.closest("[data-member]");if(ch)pick(ch.dataset.member)});
   root.addEventListener("keydown",e=>{if((e.key==="Enter"||e.key===" ")&&e.target.matches(".member-chip")){e.preventDefault();e.target.click()}});
   f.ageUnit.addEventListener("change",()=>{f.age.max=AGE_MAX[f.ageUnit.value]});
-  draw();fill();
+  draw();fill();updateBar();
   sb.from("members").select("*").order("created_at").then(({data})=>{members=data||[];draw()});
-  return{selected:()=>sel==="self"?null:sel}}
+  // When booking for "Myself", keep the profile in sync automatically (fills a blank phone/age, e.g. Google accounts).
+  return{selected:()=>sel==="self"?null:sel,syncSelf:async()=>{if(sel==="self"&&differs())await savePerson(true)}}}
 
 // ---------- booking (checkout) ----------
 async function initBooking(){const f=$("#bookingForm");if(!f)return;const c=await guard();if(!c)return;
@@ -359,6 +382,7 @@ async function initBooking(){const f=$("#bookingForm");if(!f)return;const c=awai
       const method=f.paymethod.value;
       const{data,error}=await sb.rpc("place_booking",{p_name:f.name.value.trim(),p_phone:f.phone.value.trim(),p_date:f.date.value,p_slot:f.slot.value,p_area:area,p_address:address,p_payment_method:method,p_age:+f.age.value,p_age_unit:f.ageUnit.value,p_gender:f.gender.value,p_consent:f.consent.checked,p_member_id:who.selected()});
       if(error){fail(error);b.disabled=false;updateSlots();return}
+      await who.syncSelf();
       if(saveNew)await sb.from("addresses").insert({label:f.addrLabel.value.trim()||null,area,address,lat:f.dataset.lat?+f.dataset.lat:null,lng:f.dataset.lng?+f.dataset.lng:null});
       if(method==="Cash")return location.href="account.html?new="+encodeURIComponent(data);
       b.textContent="Opening payment...";
