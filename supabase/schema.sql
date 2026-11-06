@@ -255,6 +255,20 @@ begin
   update bookings set collect_date=p_date, slot=p_slot where id=p_id;
 end $$;
 
+-- Admin gives/removes staff access from the dashboard (never touches admin accounts).
+create or replace function set_user_role(p_user uuid, p_role text) returns void
+language plpgsql security definer set search_path=public as $$
+declare v_current text;
+begin
+  if not has_role(array['admin']) then raise exception 'Not allowed'; end if;
+  if p_role not in ('patient','staff') then raise exception 'Only patient or staff access can be set here'; end if;
+  if p_user=auth.uid() then raise exception 'You can''t change your own access'; end if;
+  select role into v_current from profiles where id=p_user;
+  if not found then raise exception 'Account not found'; end if;
+  if v_current='admin' then raise exception 'Admin accounts can''t be changed here'; end if;
+  update profiles set role=p_role where id=p_user;
+end $$;
+
 -- Private bucket for PDF reports. Files live at <booking_id>/<file>.pdf
 insert into storage.buckets(id,name,public) values('reports','reports',false) on conflict do nothing;
 create policy rep_admin on storage.objects for all to authenticated

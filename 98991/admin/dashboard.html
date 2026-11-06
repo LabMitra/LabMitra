@@ -1,11 +1,12 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="theme-color" content="#123b69"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>LabMitra Admin Dashboard</title><link rel="icon" type="image/svg+xml" href="../../assets/logo-mark.svg?v=1793977282"><link rel="stylesheet" href="../../assets/style.css?v=1793977282"></head><body>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="theme-color" content="#123b69"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>LabMitra Admin Dashboard</title><link rel="icon" type="image/svg+xml" href="../../assets/logo-mark.svg?v=1793979459"><link rel="stylesheet" href="../../assets/style.css?v=1793979459"></head><body>
 <div class="dashboard">
-<aside class="side"><a class="brand" href="../../index.html"><img class="logo" src="../../assets/logo-mark.svg?v=1793977282" alt="" width="38" height="38"><span class="wordmark">Lab<b>Mitra</b></span></a>
+<aside class="side"><a class="brand" href="../../index.html"><img class="logo" src="../../assets/logo-mark.svg?v=1793979459" alt="" width="38" height="38"><span class="wordmark">Lab<b>Mitra</b></span></a>
 <nav>
   <a href="#overview" data-tab-link="overview">Overview</a>
   <a href="#bookings" data-tab-link="bookings">Bookings</a>
   <a href="#cash" data-tab-link="cash">Cash</a>
   <a href="#users" data-tab-link="users">Users</a>
+  <a href="#staffaccess" data-tab-link="staffaccess">Staff access</a>
   <a href="#pricing" data-tab-link="pricing">Test Pricing</a>
   <a href="../../index.html" target="_blank">Patient website ↗</a>
   <a href="#" id="logout">Logout</a>
@@ -61,6 +62,17 @@
   <section class="panel"><div class="table-wrap"><table class="admin-table"><thead><tr><th>Name</th><th>Age / Gender</th><th>Phone</th><th>Email</th><th>Address</th><th>Bookings</th><th>Joined</th></tr></thead><tbody id="userRows"></tbody></table></div></section>
 </section>
 
+<!-- STAFF ACCESS -->
+<section data-tab="staffaccess" hidden>
+  <div class="dash-top"><div><h1 class="page-title">Staff access</h1><div class="sub">Choose which accounts can use the staff portal (collections, report upload, cash). The person must have signed up on the website first.</div></div><span class="pill blue" id="staffCountPill">0 staff</span></div>
+  <section class="panel"><div class="panel-head"><h2>Current staff</h2></div><div class="table-wrap"><table class="admin-table"><thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Joined</th><th></th></tr></thead><tbody id="staffAccessRows"></tbody></table></div></section>
+  <section class="panel" style="padding:18px 19px"><h2 style="font-size:17px;margin:0 0 4px">Give staff access</h2>
+    <p class="sub" style="margin-top:0">Search for the person's account by name, phone or email.</p>
+    <input id="saSearch" placeholder="Type at least 2 letters or digits..." autocomplete="off">
+    <div id="saResults" class="sa-results"></div>
+  </section>
+</section>
+
 <!-- TEST PRICING -->
 <section data-tab="pricing" hidden>
   <div class="dash-top"><div><h1 class="page-title">Test Pricing</h1><div class="sub">Edit prices and details, or hide a test from the website by unticking "Active".</div></div></div>
@@ -85,4 +97,4 @@
 
 </main></div>
 <div class="toast"></div>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script><script src="../../assets/supabase.js"></script><script src="../../assets/app.js?v=1793977282"></script></body></html>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script><script src="../../assets/supabase.js"></script><script src="../../assets/app.js?v=1793979459"></script></body></html>

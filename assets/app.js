@@ -598,7 +598,7 @@ async function initAdmin(){const body=$("#bookingRows");if(!body||!await guard([
   // Sidebar tabs: the URL hash (#bookings, #reports...) decides which section is visible.
   let refreshUsers=null; // set once the Users tab code below is ready
   const showTab=()=>{const t=(location.hash||"#overview").slice(1);const valid=$(`[data-tab="${t}"]`)?t:"overview";
-    if(valid==="users"&&refreshUsers)refreshUsers();
+    if((valid==="users"||valid==="staffaccess")&&refreshUsers)refreshUsers();
     document.querySelectorAll("[data-tab]").forEach(s=>s.hidden=s.dataset.tab!==valid);
     document.querySelectorAll("[data-tab-link]").forEach(a=>a.classList.toggle("active",a.dataset.tabLink===valid));
     window.scrollTo(0,0)};
@@ -643,7 +643,7 @@ async function initAdmin(){const body=$("#bookingRows");if(!body||!await guard([
     users=(profiles||[]).map(p=>{const mine=(bks||[]).filter(b=>b.user_id===p.id);
       return{...p,saved:(addrs||[]).filter(a=>a.user_id===p.id),bookings:mine.length,lastAddr:mine[0]?`${mine[0].address}, ${mine[0].area}`:""}});
     drawUsers()};
-  refreshUsers=loadUsers;
+  refreshUsers=async()=>{await loadUsers();drawStaffAccess()};
   const drawUsers=()=>{const q=$("#userSearch").value.trim().toLowerCase(),role=$("#userRole").value;
     const list=users.filter(u=>(role==="all"||u.role===role)&&[u.full_name,u.phone,u.email,u.gender,u.lastAddr,...u.saved.map(a=>`${a.label} ${a.address} ${a.area}`)].join(" ").toLowerCase().includes(q));
     $("#userCount").textContent=`${list.length} ${list.length===1?"user":"users"}`;
@@ -657,6 +657,28 @@ async function initAdmin(){const body=$("#bookingRows");if(!body||!await guard([
         <td>${u.email?`<a href="mailto:${esc(u.email)}">${esc(u.email)}</a>`:'<span class="muted">—</span>'}</td>
         <td class="user-addr-cell">${addr}</td><td><b>${u.bookings}</b></td><td>${u.created_at?fmt(u.created_at):"—"}</td></tr>`}).join("")
       ||`<tr><td colspan="7" class="muted">${users.length?"No users match your search.":"No users yet."}</td></tr>`};
+  // --- Staff access tab ---
+  const personCells=u=>`<td><div class="user-name"><span class="user-avatar">${esc((u.full_name||u.email||"?").trim().split(/\s+/).map(w=>w[0]).slice(0,2).join("").toUpperCase())}</span><b>${esc(u.full_name||"No name")}</b></div></td><td>${esc(u.phone||"—")}</td><td>${esc(u.email||"—")}</td>`;
+  const drawStaffAccess=()=>{const staff=users.filter(u=>u.role==="staff");
+    $("#staffCountPill").textContent=`${staff.length} staff`;
+    $("#staffAccessRows").innerHTML=staff.map(u=>`<tr>${personCells(u)}<td>${u.created_at?fmt(u.created_at):"—"}</td><td><button type="button" class="light sm" data-role-set="patient" data-uid="${u.id}">Remove access</button></td></tr>`).join("")
+      ||'<tr><td colspan="5" class="muted">No staff yet. Search for an account below to give staff access.</td></tr>';
+    const q=$("#saSearch").value.trim().toLowerCase(),box=$("#saResults");
+    if(q.length<2){box.innerHTML="";return}
+    const found=users.filter(u=>u.role==="patient"&&[u.full_name,u.phone,u.email].join(" ").toLowerCase().includes(q)).slice(0,8);
+    box.innerHTML=found.length?found.map(u=>`<div class="sa-row"><div class="user-name"><span class="user-avatar">${esc((u.full_name||u.email||"?").trim().split(/\s+/).map(w=>w[0]).slice(0,2).join("").toUpperCase())}</span><div><b>${esc(u.full_name||"No name")}</b><div class="muted" style="font-size:12px">${esc([u.phone,u.email].filter(Boolean).join(" · ")||"No contact details")}</div></div></div><button type="button" class="green sm" data-role-set="staff" data-uid="${u.id}">Give staff access</button></div>`).join("")
+      :'<p class="muted" style="font-size:13px;margin:12px 2px 0">No matching patient account. They need to sign up on the website first.</p>'};
+  $("#saSearch").addEventListener("input",drawStaffAccess);
+  $("[data-tab=staffaccess]").addEventListener("click",e=>{const b=e.target.closest("[data-role-set]");if(!b)return;
+    const u=users.find(x=>x.id===b.dataset.uid),toStaff=b.dataset.roleSet==="staff";if(!u)return;
+    const body=openModal(toStaff?"Give staff access?":"Remove staff access?",`<p><b>${esc(u.full_name||"This account")}</b>${u.phone||u.email?` (${esc(u.phone||u.email)})`:""} ${toStaff
+        ?"will be able to use the staff portal: see every booking's patient details and address, update collection status, mark cash collected and upload reports."
+        :"will go back to a normal patient account and lose access to the staff portal."}</p>
+      <div class="modal-actions"><button type="button" class="light" data-close>Cancel</button><button type="button" class="${toStaff?"green":"danger"}" id="roleGo">${toStaff?"Give staff access":"Remove access"}</button></div>`);
+    body.querySelector("#roleGo").onclick=async ev=>{ev.target.disabled=true;
+      const{error}=await sb.rpc("set_user_role",{p_user:u.id,p_role:toStaff?"staff":"patient"});
+      if(error){ev.target.disabled=false;return fail(/set_user_role/.test(error.message)?new Error("Run supabase/staff_access.sql in Supabase first"):error)}
+      closeModal();toast(toStaff?`${u.full_name||"Account"} now has staff access`:"Staff access removed");$("#saSearch").value="";refreshUsers()}});
   $("#userSearch").addEventListener("input",drawUsers);$("#userRole").addEventListener("change",drawUsers);
 
   // --- Test Pricing tab ---
@@ -691,7 +713,7 @@ async function initAdmin(){const body=$("#bookingRows");if(!body||!await guard([
     downloadCSV(`labmitra-cash-by-person-${today()}.csv`,["Name","Cash jobs","Collected (Rs)","Handed over (Rs)","Confirmed received (Rs)","Still with them (Rs)"],
       L.map(p=>[p.office?"Office (marked paid by admin)":p.name,p.jobs,p.collected,p.office?"":p.handed,p.office?"":p.received,p.office?"":p.inHand]))};
 
-  loadTests();loadUsers()}
+  loadTests();refreshUsers()}
 
 // ---------- staff ----------
 const PHONE_ICON='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8 9.8a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 2z"/></svg>';

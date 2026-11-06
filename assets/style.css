@@ -467,3 +467,7 @@ body:has(.cart-bar.show) .toast{bottom:104px}
 }
 @media(max-width:380px){.cb-text small{display:none}.cb-cta{font-size:12.5px}}
 @media(prefers-reduced-motion:reduce){.cart-bar{transition:opacity .2s}.cart-bar.bump{animation:none}}
+/* admin: staff access search results */
+.sa-results{margin-top:6px}
+.sa-row{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;padding:11px 4px;border-bottom:1px solid #eef2f6}
+.sa-row:last-child{border-bottom:0}
