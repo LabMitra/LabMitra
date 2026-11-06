@@ -95,6 +95,18 @@ function drawMobileNav(c,count){let n=$("#mobileNav");
   if(c&&c.profile.role==="admin")items.push(item("98991/admin/dashboard.html",I.shield,"Admin",false));
   if(c&&c.profile.role==="staff")items.push(item("staff/dashboard.html",I.shield,"Staff",false));
   n.style.setProperty("--n",items.length);n.innerHTML=items.join("")}
+// ---------- floating "Proceed to cart" bar (phone: above the tab bar, computer: bottom-right card) ----------
+async function drawCartBar(count,bump){let bar=$("#cartBar");const page=location.pathname.split("/").pop()||"index.html";
+  if(!count||["cart.html","booking.html","login.html"].includes(page)){if(bar)bar.classList.remove("show");return}
+  const{data}=await sb.from("cart_items").select("tests(name,price)");const items=(data||[]).map(r=>r.tests).filter(Boolean);
+  const total=items.reduce((s,t)=>s+t.price,0);
+  if(!bar){bar=document.createElement("a");bar.id="cartBar";bar.className="cart-bar";bar.href="cart.html";document.body.appendChild(bar)}
+  bar.setAttribute("aria-label",`Cart: ${count} ${count===1?"test":"tests"}, ${money(total)}. Proceed to cart`);
+  bar.innerHTML=`<span class="cb-icon">${MNAV_ICONS.cart}<b>${count}</b></span>
+    <span class="cb-text"><b>${count} ${count===1?"test":"tests"} · ${money(total)}</b><small>${esc(items.map(t=>t.name).join(", "))}</small></span>
+    <span class="cb-cta">Proceed to cart<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span>`;
+  requestAnimationFrame(()=>bar.classList.add("show"));
+  if(bump){bar.classList.remove("bump");void bar.offsetWidth;bar.classList.add("bump")}}
 let _flipTimer,_lastCartCount=null;
 async function initNav(){const el=$("#navAuth");const hero=$("#heroAuth");const c=await me();
   clearInterval(_flipTimer);
@@ -105,12 +117,12 @@ async function initNav(){const el=$("#navAuth");const hero=$("#heroAuth");const 
         setTimeout(()=>{label.textContent=signup?"Sign up":"Login";btn.href=signup?"login.html?mode=signup":"login.html"},150);
         setTimeout(()=>btn.classList.remove("flip"),300)},2000)}
     if(hero)hero.innerHTML='<a class="btn green" href="login.html?mode=signup">Create account</a> <a class="btn light" href="login.html">Login</a>';
-    if(el)drawMobileNav(null);
+    if(el)drawMobileNav(null);$("#cartBar")?.classList.remove("show");
     return}
   if(hero)hero.innerHTML="";
   if(!el)return;
   const{count}=await sb.from("cart_items").select("*",{count:"exact",head:true});const r=c.profile.role;
-  const bump=_lastCartCount!==null&&count>_lastCartCount;_lastCartCount=count;drawMobileNav(c,count);
+  const bump=_lastCartCount!==null&&count>_lastCartCount;_lastCartCount=count;drawMobileNav(c,count);drawCartBar(count,bump);
   const cartIcon='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>';
   const bookIcon='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="4" rx="1"></rect><path d="M9 4H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-4"></path><path d="M9 14l2 2 4-4"></path></svg>';
   const userIcon='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"></circle><path d="M4 21c0-4 4-7 8-7s8 3 8 7"></path></svg>';
