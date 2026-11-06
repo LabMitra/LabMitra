@@ -63,6 +63,11 @@ function downloadCSV(filename,header,rows){
   const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv;charset=utf-8"}));a.download=filename;
   document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},500)}
 
+// Errors Supabase adds to the address after an email link (e.g. #error_code=otp_expired). Read early, before the client clears it.
+const _authErr=(()=>{const h=new URLSearchParams(location.hash.slice(1));return h.get("error_code")||h.get("error")?{code:h.get("error_code")||h.get("error"),msg:h.get("error_description")}:null})();
+function showAuthLinkError(){if(!_authErr)return;history.replaceState(null,"",location.pathname+location.search);
+  toast(_authErr.code==="otp_expired"?"That email link has expired or was already used. Log in, and we'll send you a fresh one if needed.":(_authErr.msg||"That link didn't work. Please try again."),false)}
+
 // ---------- auth ----------
 let _ctx;
 async function me(){if(_ctx)return _ctx;const{data:{session}}=await sb.auth.getSession();if(!session)return null;
@@ -112,26 +117,61 @@ async function initNav(){const el=$("#navAuth");const hero=$("#heroAuth");const 
   el.innerHTML=`<a href="cart.html" class="navpill cart">${cartIcon}Cart${count?`<span class="navbadge${bump?" bump":""}">${count}</span>`:""}</a><a href="account.html" class="navpill">${bookIcon}My Bookings</a><a href="profile.html" class="navpill">${userIcon}My Account</a>${r==="admin"?'<a href="98991/admin/dashboard.html">Admin</a>':""}${r==="staff"?'<a href="staff/dashboard.html">Staff</a>':""}<a class="btn" href="#" id="logout">Logout</a>`;
   $("#logout").onclick=async e=>{e.preventDefault();await sb.auth.signOut();location.href="index.html"}}
 function initLogin(){const f=$("#authForm");if(!f)return;const qs=new URLSearchParams(location.search);let signup=qs.get("mode")==="signup";
+  if(qs.get("confirmed")&&!_authErr)setTimeout(async()=>{const{data:{session}}=await sb.auth.getSession();
+    if(session){toast("Email confirmed! You're logged in.");setTimeout(()=>location.href="index.html",1300)}},400);
   const sync=()=>{$("#signupFields").hidden=!signup;$("#authTitle").textContent=signup?"Create your account":"Welcome back";$("#authBtn").textContent=signup?"Sign up":"Login";
     $("#toggle").textContent=signup?"Already have an account? Login":"New here? Create an account";f.name.required=f.phone.required=signup};sync();
   $("#toggle").onclick=e=>{e.preventDefault();signup=!signup;sync()};
-  // Google sign-in: same button for new and returning users. Supabase sends them to Google,
+  // Google popup sign-in (preferred): Google's own button opens a small popup, the user picks an account,
+  // and we sign them in to Supabase with the ID token Google returns. Falls back to the redirect button below.
+  const gSlot=$("#googleGsiBtn");
+  if(gSlot&&typeof GOOGLE_CLIENT_ID!=="undefined"&&GOOGLE_CLIENT_ID){
+    const raw=btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
+    const setup=async()=>{
+      const hashed=[...new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(raw)))].map(b=>b.toString(16).padStart(2,"0")).join("");
+      google.accounts.id.initialize({client_id:GOOGLE_CLIENT_ID,nonce:hashed,ux_mode:"popup",auto_select:false,itp_support:true,context:"signin",
+        callback:async resp=>{
+          const{data,error}=await sb.auth.signInWithIdToken({provider:"google",token:resp.credential,nonce:raw});
+          if(error)return fail(error);
+          // Fill the name from Google if the profile doesn't have one yet.
+          const m=data.user?.user_metadata||{},name=m.full_name||m.name;
+          if(name){const{data:p}=await sb.from("profiles").select("full_name").eq("id",data.user.id).single();
+            if(p&&!p.full_name)await sb.from("profiles").update({full_name:name}).eq("id",data.user.id)}
+          toast("Signed in with Google");location.href=qs.get("next")||"index.html"}});
+      google.accounts.id.renderButton(gSlot,{type:"standard",theme:"outline",size:"large",text:"continue_with",shape:"rectangular",logo_alignment:"center",
+        width:Math.max(200,Math.min(400,gSlot.parentElement.clientWidth))});
+      gSlot.hidden=false;$("#googleBtn").hidden=true};
+    // Google's script loads in the background; wait up to ~6s for it, else keep the redirect button.
+    let tries=0;const wait=()=>{if(window.google?.accounts?.id)setup().catch(e=>console.warn("Google popup sign-in unavailable:",e));else if(++tries<60)setTimeout(wait,100)};wait()}
+  // Google sign-in (backup: full-page redirect): same button for new and returning users. Supabase sends them to Google,
   // then back to `next` (or the home page) already logged in. The account is created on first use.
   const g=$("#googleBtn");if(g)g.onclick=async()=>{g.disabled=true;g.querySelector("span").textContent="Opening Google...";
     const back=new URL(qs.get("next")||"index.html",location.href).href;
     const{error}=await sb.auth.signInWithOAuth({provider:"google",options:{redirectTo:back}});
     if(error){fail(error);g.disabled=false;g.querySelector("span").textContent="Continue with Google"}};
-  // Phone OTP sign-in: name + number -> SMS code -> logged in. New numbers get an account automatically.
+  // Phone OTP: "Create account" mode asks name + number; "Login" mode asks number only and
+  // refuses unknown numbers (so a typo doesn't silently create a second account).
   const pb=$("#phoneBtn");if(pb){const panel=$("#phonePanel");let phone="",timer;
-    pb.onclick=()=>{panel.hidden=!panel.hidden;pb.classList.toggle("open",!panel.hidden);if(!panel.hidden)$("#phName").focus()};
+    const phoneMode=()=>{$("#phNameWrap").hidden=!signup;$("#phoneBtnLabel").textContent=signup?"Create account with phone number":"Log in with phone number"};
+    phoneMode();$("#toggle").addEventListener("click",()=>setTimeout(phoneMode));
+    pb.onclick=()=>{panel.hidden=!panel.hidden;pb.classList.toggle("open",!panel.hidden);if(!panel.hidden)(signup?$("#phName"):$("#phNumber")).focus()};
     const startResend=()=>{let s=30;const a=$("#resendOtp");a.classList.add("disabled");clearInterval(timer);
       const tick=()=>{a.textContent=s>0?`Resend OTP in ${s}s`:"Resend OTP";if(s<=0){a.classList.remove("disabled");clearInterval(timer)}s--};tick();timer=setInterval(tick,1000)};
     const send=async()=>{const name=$("#phName").value.trim(),digits=$("#phNumber").value.replace(/\D/g,"");
-      if(!name)return toast("Please enter your name",false);
+      const email=$("#phEmail").value.trim();
+      if(signup&&email&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))return toast("That email doesn't look right. Fix it or leave it empty.",false);
+      if(signup&&!name)return toast("Please enter your name",false);
       if(digits.length!==10)return toast("Enter a valid 10-digit mobile number",false);
       phone="+91"+digits;const b=$("#sendOtpBtn");b.disabled=true;b.textContent="Sending...";
-      const{error}=await sb.auth.signInWithOtp({phone,options:{data:{full_name:name,phone:digits}}});
-      b.disabled=false;b.textContent="Send OTP";if(error)return fail(error);
+      const{error}=await sb.auth.signInWithOtp({phone,options:signup?{shouldCreateUser:true,data:{full_name:name,phone:digits,contact_email:email||null}}:{shouldCreateUser:false}});
+      b.disabled=false;b.textContent="Send OTP";
+      if(error){
+        if(/signups? not allowed|user not found|otp_disabled/i.test(error.message)){
+          toast("No account with this number yet. Enter your name to create one.",false);
+          signup=true;sync();phoneMode();return $("#phName").focus()}
+        if(/unsupported phone provider|phone.*(disabled|not enabled)|provider is not enabled/i.test(error.message))
+          return toast("Phone login isn't switched on yet. Please use email or Google for now.",false);
+        return fail(error)}
       $("#phoneStep1").hidden=true;$("#phoneStep2").hidden=false;
       $("#otpSentTo").innerHTML=`We sent a 6-digit code to <b>+91 ${digits.slice(0,5)} ${digits.slice(5)}</b>`;
       $("#phOtp").value="";$("#phOtp").focus();startResend();toast("OTP sent")};
@@ -150,9 +190,13 @@ function initLogin(){const f=$("#authForm");if(!f)return;const qs=new URLSearchP
     $("#phOtp").addEventListener("keydown",e=>{if(e.key==="Enter")verify()});
     $("#phOtp").addEventListener("input",e=>{if(e.target.value.replace(/\D/g,"").length===6)verify()})}
   f.onsubmit=async e=>{e.preventDefault();const b=$("#authBtn");b.disabled=true;
-    try{if(signup){const{data,error}=await sb.auth.signUp({email:f.email.value,password:f.password.value,options:{data:{full_name:f.name.value,phone:f.phone.value}}});if(error)throw error;
+    try{if(signup){const{data,error}=await sb.auth.signUp({email:f.email.value,password:f.password.value,options:{emailRedirectTo:new URL("login.html?confirmed=1",location.href).href,data:{full_name:f.name.value,phone:f.phone.value}}});if(error)throw error;
         if(!data.session){toast("Account created. Check your email to confirm, then login.");b.disabled=false;return}}
-      else{const{error}=await sb.auth.signInWithPassword({email:f.email.value,password:f.password.value});if(error)throw error}
+      else{const{error}=await sb.auth.signInWithPassword({email:f.email.value,password:f.password.value});
+        if(error&&/email not confirmed/i.test(error.message)){
+          const{error:rErr}=await sb.auth.resend({type:"signup",email:f.email.value,options:{emailRedirectTo:new URL("login.html?confirmed=1",location.href).href}});
+          toast(rErr?"Please confirm your email first. Check your inbox (and spam) for the link.":`Your email isn't confirmed yet. We've sent a fresh link to ${f.email.value}.`,!!rErr===false);b.disabled=false;return}
+        if(error)throw error}
       location.href=qs.get("next")||"index.html"}catch(err){fail(err);b.disabled=false}}}
 function initStaffLogin(){const f=$("#staffForm");if(!f)return;
   f.onsubmit=async e=>{e.preventDefault();const{error}=await sb.auth.signInWithPassword({email:f.email.value,password:f.password.value});if(error)return fail(error);
@@ -734,4 +778,4 @@ async function initStaffReports(){const root=$("#staffReports");if(!root)return;
   root.addEventListener("click",async e=>{const a=e.target.closest("[data-view]");if(!a)return;e.preventDefault();const{data,error}=await sb.storage.from("reports").createSignedUrl(a.dataset.view,120);if(error)return fail(error);window.open(data.signedUrl,"_blank")});
   load();return load}
 
-document.addEventListener("DOMContentLoaded",()=>{initNav();initLogin();initStaffLogin();initAdminLogin();initTagline();initHome();initCart();initBooking();initProfile();initAccount();initReceipt();initAdmin();initStaff()});
+document.addEventListener("DOMContentLoaded",()=>{showAuthLinkError();initNav();initLogin();initStaffLogin();initAdminLogin();initTagline();initHome();initCart();initBooking();initProfile();initAccount();initReceipt();initAdmin();initStaff()});

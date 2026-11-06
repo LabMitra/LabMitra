@@ -1,4 +1,4 @@
-# LabMitra
+# LabMitra (Supabase)
 
 ## Fresh setup (new Supabase project)
 1. Create a project at supabase.com.

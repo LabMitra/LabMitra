@@ -428,3 +428,5 @@ a,button,.member-chip,.addr-card,.pay-option{-webkit-tap-highlight-color:transpa
   .mnav a{font-size:10px}
   .seg button{font-size:11px}
 }
+/* Google's official popup sign-in button */
+.gsi-slot{display:flex;justify-content:center;margin-top:18px;min-height:44px}
