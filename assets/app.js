@@ -289,8 +289,12 @@ function memberPicker(f,c){const root=$("#memberPicker");if(!root)return{selecte
             :{name:c.profile.full_name||"",phone:c.profile.phone||"",age:c.profile.age??"",unit:"years",gender:c.profile.gender||""}};
   const current=()=>({name:f.name.value.trim(),phone:f.phone.value.replace(/[^\d]/g,""),age:f.age.value===""?"":+f.age.value,unit:f.ageUnit.value,gender:f.gender.value});
   const differs=()=>{const a=stored(),b=current();return a.name!==b.name||String(a.phone).replace(/[^\d]/g,"")!==b.phone||String(a.age)!==String(b.age)||(sel!=="self"&&a.unit!==b.unit)||a.gender!==b.gender};
-  const updateBar=()=>{const bar=$("#savePerson");if(!bar)return;const m=members.find(x=>x.id===sel);
-    bar.hidden=!differs();$("#savePersonText").textContent=m?`Update ${m.name}'s saved details?`:"Update your saved details?"};
+  // Autosave status under the fields: "Saving…" → "✓ Saved to your profile".
+  let saveT,hideT;
+  const setStatus=(state,msg)=>{const bar=$("#savePerson");if(!bar)return;clearTimeout(hideT);
+    bar.hidden=!state;bar.dataset.state=state||"";$("#savePersonText").textContent=msg||"";
+    if(state==="saved")hideT=setTimeout(()=>{bar.hidden=true},2500)};
+  const updateBar=()=>{};
   const savePerson=async quiet=>{const v=current(),m=members.find(x=>x.id===sel);
     if(!v.name){if(!quiet)toast("Enter a name first",false);return false}
     if(v.phone&&(v.phone.length<10||v.phone.length>13)){if(!quiet)toast("Enter a valid mobile number",false);return false}
@@ -302,10 +306,18 @@ function memberPicker(f,c){const root=$("#memberPicker");if(!root)return{selecte
       const patch={full_name:v.name,phone:v.phone||null,gender:v.gender||null};if(v.unit==="years")patch.age=v.age===""?null:v.age;
       const{error}=await sb.from("profiles").update(patch).eq("id",c.user.id);if(error){if(!quiet)fail(error);return false}
       Object.assign(c.profile,patch)}
-    draw();updateBar();if(!quiet)toast(m?`${v.name}'s details saved`:"Saved to your profile");return true};
-  const saveBtn=$("#savePersonBtn");if(saveBtn)saveBtn.onclick=async()=>{saveBtn.disabled=true;await savePerson(false);saveBtn.disabled=false};
-  ["name","phone","age"].forEach(n=>f[n].addEventListener("input",updateBar));["ageUnit","gender"].forEach(n=>f[n].addEventListener("change",updateBar));
-  const pick=id=>{sel=id;draw();fill();updateBar()};
+    draw();if(!quiet)toast(m?`${v.name}'s details saved`:"Saved to your profile");return true};
+  // Save a moment after the person stops typing (straight away for dropdowns). Incomplete details wait quietly.
+  const runSave=async()=>{saveT=null;if(!differs())return setStatus();
+    const m=members.find(x=>x.id===sel),who=m?`${m.name}'s details`:"your profile";
+    setStatus("saving","Saving…");
+    if(await savePerson(true))setStatus("saved",`✓ Saved to ${who}`);
+    else setStatus("waiting","Will save once the mobile number and age are complete")};
+  const scheduleSave=delay=>{clearTimeout(saveT);if(!differs())return setStatus();setStatus("saving","Saving…");saveT=setTimeout(runSave,delay)};
+  ["name","phone","age"].forEach(n=>{f[n].addEventListener("input",()=>scheduleSave(1200));f[n].addEventListener("blur",()=>{if(saveT){clearTimeout(saveT);runSave()}})});
+  ["ageUnit","gender"].forEach(n=>f[n].addEventListener("change",()=>scheduleSave(300)));
+  // Switching person: finish any pending save for the previous one first.
+  const pick=async id=>{if(saveT){clearTimeout(saveT);await runSave()}sel=id;draw();fill();setStatus()};
   const addDialog=()=>{const body=openModal("Add a family member",`<div class="form-grid">
       <div><label>Full name</label><input id="mmName" placeholder="e.g. Kamla Devi"></div>
       <div><label>Relation</label><select id="mmRel">${RELATIONS.map(r=>`<option>${r}</option>`).join("")}</select></div>
@@ -334,10 +346,10 @@ function memberPicker(f,c){const root=$("#memberPicker");if(!root)return{selecte
     const ch=e.target.closest("[data-member]");if(ch)pick(ch.dataset.member)});
   root.addEventListener("keydown",e=>{if((e.key==="Enter"||e.key===" ")&&e.target.matches(".member-chip")){e.preventDefault();e.target.click()}});
   f.ageUnit.addEventListener("change",()=>{f.age.max=AGE_MAX[f.ageUnit.value]});
-  draw();fill();updateBar();
+  draw();fill();
   sb.from("members").select("*").order("created_at").then(({data})=>{members=data||[];draw()});
   // When booking for "Myself", keep the profile in sync automatically (fills a blank phone/age, e.g. Google accounts).
-  return{selected:()=>sel==="self"?null:sel,syncSelf:async()=>{if(sel==="self"&&differs())await savePerson(true)}}}
+  return{selected:()=>sel==="self"?null:sel,syncSelf:async()=>{clearTimeout(saveT);if(differs())await savePerson(true)}}}
 
 // ---------- booking (checkout) ----------
 async function initBooking(){const f=$("#bookingForm");if(!f)return;const c=await guard();if(!c)return;
@@ -572,7 +584,9 @@ function liveHandovers(onData){
 async function initAdmin(){const body=$("#bookingRows");if(!body||!await guard(["admin"],"login.html"))return;
   $("#logout").onclick=async e=>{e.preventDefault();await sb.auth.signOut();location.href="login.html"};
   // Sidebar tabs: the URL hash (#bookings, #reports...) decides which section is visible.
+  let refreshUsers=null; // set once the Users tab code below is ready
   const showTab=()=>{const t=(location.hash||"#overview").slice(1);const valid=$(`[data-tab="${t}"]`)?t:"overview";
+    if(valid==="users"&&refreshUsers)refreshUsers();
     document.querySelectorAll("[data-tab]").forEach(s=>s.hidden=s.dataset.tab!==valid);
     document.querySelectorAll("[data-tab-link]").forEach(a=>a.classList.toggle("active",a.dataset.tabLink===valid));
     window.scrollTo(0,0)};
@@ -617,6 +631,7 @@ async function initAdmin(){const body=$("#bookingRows");if(!body||!await guard([
     users=(profiles||[]).map(p=>{const mine=(bks||[]).filter(b=>b.user_id===p.id);
       return{...p,saved:(addrs||[]).filter(a=>a.user_id===p.id),bookings:mine.length,lastAddr:mine[0]?`${mine[0].address}, ${mine[0].area}`:""}});
     drawUsers()};
+  refreshUsers=loadUsers;
   const drawUsers=()=>{const q=$("#userSearch").value.trim().toLowerCase(),role=$("#userRole").value;
     const list=users.filter(u=>(role==="all"||u.role===role)&&[u.full_name,u.phone,u.email,u.gender,u.lastAddr,...u.saved.map(a=>`${a.label} ${a.address} ${a.area}`)].join(" ").toLowerCase().includes(q));
     $("#userCount").textContent=`${list.length} ${list.length===1?"user":"users"}`;

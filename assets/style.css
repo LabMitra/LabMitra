@@ -432,3 +432,7 @@ a,button,.member-chip,.addr-card,.pay-option{-webkit-tap-highlight-color:transpa
 .gsi-slot{display:flex;justify-content:center;margin-top:18px;min-height:44px}
 /* booking: "Update your saved details?  [Save changes]" */
 .save-person{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-top:12px;padding:10px 12px;border:1px solid #bfe5cf;background:#f1fbf5;border-radius:10px;font-size:13px;color:#187345;font-weight:600;animation:stabIn .25s ease}
+/* autosave status */
+.save-person{padding:7px 11px;font-size:12.5px}
+.save-person[data-state="saving"]{background:#f3f6fa;border-color:var(--line);color:var(--muted)}
+.save-person[data-state="waiting"]{background:#fff8e8;border-color:#f1d9a6;color:#8a5b00}
