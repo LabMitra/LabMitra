@@ -1,9 +1,10 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="theme-color" content="#123b69"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>LabMitra Admin Dashboard</title><link rel="icon" type="image/svg+xml" href="../../assets/logo-mark.svg?v=1793979459"><link rel="stylesheet" href="../../assets/style.css?v=1793979459"></head><body>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><script>try{if(localStorage.getItem("lm_theme")==="dark")document.documentElement.dataset.theme="dark"}catch(e){}</script><meta name="theme-color" content="#123b69"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>LabMitra Admin Dashboard</title><link rel="icon" type="image/svg+xml" href="../../assets/logo-mark.svg?v=1794090790"><link rel="stylesheet" href="../../assets/style.css?v=1794090790"></head><body>
 <div class="dashboard">
-<aside class="side"><a class="brand" href="../../index.html"><img class="logo" src="../../assets/logo-mark.svg?v=1793979459" alt="" width="38" height="38"><span class="wordmark">Lab<b>Mitra</b></span></a>
+<aside class="side"><a class="brand" href="../../index.html"><img class="logo" src="../../assets/logo-mark.svg?v=1794090790" alt="" width="38" height="38"><span class="wordmark">Lab<b>Mitra</b></span></a>
 <nav>
   <a href="#overview" data-tab-link="overview">Overview</a>
   <a href="#bookings" data-tab-link="bookings">Bookings</a>
+  <a href="#live" data-tab-link="live">Live tracking <span class="live-count" id="liveCount" hidden></span></a>
   <a href="#cash" data-tab-link="cash">Cash</a>
   <a href="#users" data-tab-link="users">Users</a>
   <a href="#staffaccess" data-tab-link="staffaccess">Staff access</a>
@@ -17,19 +18,47 @@
 <!-- OVERVIEW -->
 <section data-tab="overview">
   <div class="dash-top"><div><h1 class="page-title">Dashboard Overview</h1><div class="sub">LabMitra operations · Raipur launch</div></div><span class="pill green">LIVE</span></div>
+  <h3 class="ov-h">Right now</h3>
   <div class="stats">
     <div class="stat"><span>Today's Bookings</span><b id="todayCount">0</b><em>Bookings created today</em></div>
-    <div class="stat"><span>Total Bookings</span><b id="bookingCount">0</b><em>All time</em></div>
-    <div class="stat"><span>Paid Revenue</span><b id="revenue">₹0</b><em>All paid bookings</em></div>
-    <div class="stat"><span>Cash Revenue</span><b id="cashRevenue">₹0</b><em>Collected by staff</em></div>
-    <div class="stat"><span>Online Revenue</span><b id="onlineRevenue">₹0</b><em>Via Razorpay</em></div>
     <div class="stat"><span>Pending Collections</span><b id="pendingCount">0</b><em>Confirmed / assigned</em></div>
+    <a class="stat" href="#live"><span>Staff on the way</span><b id="liveTile">0</b><em>Live tracking →</em></a>
     <div class="stat"><span>Samples at Lab</span><b id="labCount">0</b><em>Handover / processing</em></div>
     <div class="stat"><span>Reports Pending</span><b id="repPending">0</b><em>Waiting for PDF</em></div>
     <a class="stat" href="#cash"><span>Cash with staff</span><b id="cashWithStaff">₹0</b><em>Not yet handed to office →</em></a>
+    <div class="stat"><span>Total Bookings</span><b id="bookingCount">0</b><em>All time</em></div>
   </div>
+
+  <div class="period-bar">
+    <h3 class="ov-h" style="margin:0">Analytics</h3>
+    <div class="seg" id="periodSeg" role="group" aria-label="Period">
+      <button type="button" data-p="week" class="on">Weekly</button><button type="button" data-p="month">Monthly</button><button type="button" data-p="year">Yearly</button>
+    </div>
+    <div class="period-nav"><button type="button" class="light sm" id="perPrev" aria-label="Previous period">‹</button><span class="per-wrap"><button type="button" class="per-label" id="perLabel" aria-haspopup="true" aria-expanded="false" title="Click to choose a date">This week</button><div class="per-pick" id="perPick" hidden></div></span><button type="button" class="light sm" id="perNext" aria-label="Next period">›</button></div>
+  </div>
+  <div class="stats kpis" id="kpiTiles"></div>
+
+  <div class="an-grid">
+    <section class="panel an-wide"><div class="panel-head"><h2>Revenue trend</h2><span class="muted" style="font-size:12px" id="trendNote"></span></div><div class="vbars" id="trendChart"></div></section>
+    <section class="panel"><div class="panel-head"><h2>✨ Smart insights</h2></div><ul class="insights" id="insights"></ul></section>
+    <section class="panel"><div class="panel-head"><h2>Payment mix</h2></div><div class="an-body" id="payMix"></div></section>
+    <section class="panel"><div class="panel-head"><h2>Top tests</h2></div><div class="an-body" id="topTests"></div></section>
+    <section class="panel"><div class="panel-head"><h2>Top areas</h2></div><div class="an-body" id="topAreas"></div></section>
+    <section class="panel"><div class="panel-head"><h2>Busiest time slots</h2></div><div class="an-body" id="slotChart"></div></section>
+    <section class="panel"><div class="panel-head"><h2>Busiest days of the week</h2></div><div class="an-body" id="dowChart"></div></section>
+    <section class="panel"><div class="panel-head"><h2>Patients</h2></div><div class="an-body" id="patientMix"></div></section>
+    <section class="panel"><div class="panel-head"><h2>Booking funnel</h2></div><div class="an-body" id="funnel"></div></section>
+  </div>
+  <div class="chart-tip" id="chartTip" hidden></div>
   <section class="panel"><div class="panel-head"><h2>Latest bookings</h2><a href="#bookings" class="muted" style="font-size:12px">See all →</a></div><div class="table-wrap"><table><thead><tr><th>Booking Ref</th><th>Patient</th><th>Collection</th><th>Amount</th><th>Status</th><th>Payment</th></tr></thead><tbody id="recentRows"></tbody></table></div></section>
   <section class="panel"><div class="panel-head"><h2>Quick Management</h2></div><div class="quick"><a href="#bookings">Manage bookings</a><a href="#cash">Cash &amp; handovers</a><a href="#pricing">Manage test prices</a></div></section>
+</section>
+
+<!-- LIVE TRACKING -->
+<section data-tab="live" hidden>
+  <div class="dash-top"><div><h1 class="page-title">Live tracking</h1><div class="sub">Staff travelling to patients right now. The map moves by itself as they move. Trips start when staff press "Start trip" and end when the sample is collected.</div></div><span class="pill green" id="livePill">0 on the way</span></div>
+  <section class="panel"><div class="live-map" id="adminMap"></div></section>
+  <section class="panel"><div class="table-wrap"><table class="admin-table"><thead><tr><th>Staff</th><th>Patient</th><th>Status</th><th>Distance · ETA</th><th>Last update</th><th></th></tr></thead><tbody id="liveRows"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody></table></div></section>
 </section>
 
 <!-- BOOKINGS -->
@@ -58,6 +87,7 @@
   <div class="users-tools">
     <input id="userSearch" placeholder="Search by name, phone, email or address...">
     <select id="userRole"><option value="all">All roles</option><option value="patient">Patients</option><option value="staff">Staff</option><option value="admin">Admins</option></select>
+    <button type="button" class="green" id="exportUsers" title="Download the users shown below as an Excel file"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>Export Excel</button>
   </div>
   <section class="panel"><div class="table-wrap"><table class="admin-table"><thead><tr><th>Name</th><th>Age / Gender</th><th>Phone</th><th>Email</th><th>Address</th><th>Bookings</th><th>Joined</th></tr></thead><tbody id="userRows"></tbody></table></div></section>
 </section>
@@ -97,4 +127,4 @@
 
 </main></div>
 <div class="toast"></div>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script><script src="../../assets/supabase.js"></script><script src="../../assets/app.js?v=1793979459"></script></body></html>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script><script src="../../assets/supabase.js"></script><script src="../../assets/app.js?v=1794090790"></script></body></html>

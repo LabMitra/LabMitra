@@ -441,14 +441,140 @@ const ICONS={cal:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
 const statusMeta=s=>s==="Report ready"?{cls:"green"}:s==="Cancelled"?{cls:"red"}:{cls:"amber"};
 const payLabel=b=>b.payment==="Refund pending"?"Refund in progress":b.payment==="Refunded"?"Refunded":`${b.payment} · ${b.payment_method||"Cash"}`;
 const canChange=b=>["Confirmed","Assigned"].includes(b.status)&&!slotStarted(b.collect_date,b.slot);
+// ---------- Live tracking: shared map + helpers ----------
+// Uses Google Maps when GOOGLE_MAPS_KEY is set in assets/supabase.js, otherwise free OpenStreetMap (no key needed).
+const geoKm=(a,b)=>{const R=6371,r=x=>x*Math.PI/180,dLat=r(b.lat-a.lat),dLng=r(b.lng-a.lng);
+  const h=Math.sin(dLat/2)**2+Math.cos(r(a.lat))*Math.cos(r(b.lat))*Math.sin(dLng/2)**2;return 2*R*Math.asin(Math.sqrt(h))};
+const tripEta=km=>Math.max(1,Math.round(km*1.35/18*60)); // roads ~1.35× straight line, ~18 km/h city traffic on a two-wheeler
+const kmText=km=>km<1?Math.round(km*1000/10)*10+" m":km.toFixed(1)+" km";
+const agoText=t=>{const s=Math.max(0,(Date.now()-new Date(t).getTime())/1000);return s<15?"just now":s<60?Math.round(s)+" s ago":s<3600?Math.round(s/60)+" min ago":Math.round(s/3600)+" h ago"};
+const SCOOTER_ICON='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5.5" cy="17" r="2.5"/><circle cx="18.5" cy="17" r="2.5"/><path d="M8 17h7l3-7h-3"/><path d="M15 10 13 6h-3"/><path d="M5.5 14.5 8 10h5"/></svg>';
+const MAP_PINS={
+  rider:'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 44 44" width="44" height="44"><circle cx="22" cy="22" r="19" fill="#1d70b7" stroke="#fff" stroke-width="3"/><g fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="14.5" cy="26" r="3"/><circle cx="29.5" cy="26" r="3"/><path d="M17.5 26h8l3.5-8h-3.5M25.5 18l-2-4h-3.5M14.5 23l3-5h6"/></g></svg>',
+  home:'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 44" width="36" height="44"><path d="M18 42s15-14 15-25.5A15 15 0 0 0 3 16.5C3 28 18 42 18 42Z" fill="#13834e" stroke="#fff" stroke-width="2.5"/><path d="M11.5 18 18 12l6.5 6v7.5h-4.3v-4.3h-4.4v4.3h-4.3z" fill="#fff"/></svg>'};
+const PIN_SIZE={rider:[44,44,22,22],home:[36,44,18,42]}; // width, height, anchor x, anchor y
+const RAIPUR={lat:21.2514,lng:81.6296};
+let _mapLib=null;
+const loadScript=src=>new Promise((ok,no)=>{const s=document.createElement("script");s.src=src;s.async=true;s.onload=ok;s.onerror=no;document.head.appendChild(s)});
+function mapLib(){if(_mapLib)return _mapLib;const key=typeof GOOGLE_MAPS_KEY==="string"?GOOGLE_MAPS_KEY.trim():"";
+  _mapLib=key?new Promise((ok,no)=>{window.__lmGmapsReady=()=>ok("google");loadScript(`https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&callback=__lmGmapsReady&loading=async`).catch(no)})
+    :(()=>{const l=document.createElement("link");l.rel="stylesheet";l.href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css";document.head.appendChild(l);
+      return loadScript("https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js").then(()=>"leaflet")})();
+  _mapLib.catch(()=>{_mapLib=null});return _mapLib}
+// Slide a marker smoothly to its new spot (like delivery apps) instead of jumping.
+function glide(from,to,set){if(!from||geoKm(from,to)>2){set(to);return}const t0=performance.now(),D=900;
+  const step=now=>{const k=Math.min(1,(now-t0)/D),e=k<.5?2*k*k:1-(-2*k+2)**2/2;set({lat:from.lat+(to.lat-from.lat)*e,lng:from.lng+(to.lng-from.lng)*e});if(k<1)requestAnimationFrame(step)};
+  requestAnimationFrame(step)}
+// One small interface for both map libraries: pin / line / drop / keepOnly / fit / focus / resize.
+async function makeLiveMap(el){const lib=await mapLib(),items={};el.classList.add("lm-map");
+  if(lib==="google"){const g=google.maps,info=new g.InfoWindow();
+    const map=new g.Map(el,{center:RAIPUR,zoom:12,disableDefaultUI:true,zoomControl:true,gestureHandling:"cooperative",clickableIcons:false,
+      styles:[{featureType:"poi",stylers:[{visibility:"off"}]},{featureType:"transit",stylers:[{visibility:"off"}]}]});
+    const api={lib,
+      pin(id,{lat,lng,kind,label}){const pos={lat,lng},it=items[id];
+        if(!it){const[w,h,ax,ay]=PIN_SIZE[kind];const m=new g.Marker({map,position:pos,title:label||"",zIndex:kind==="rider"?20:10,
+            icon:{url:"data:image/svg+xml;charset=UTF-8,"+encodeURIComponent(MAP_PINS[kind]),scaledSize:new g.Size(w,h),anchor:new g.Point(ax,ay)}});
+          m.addListener("click",()=>{if(m.getTitle()){info.setContent(esc(m.getTitle()));info.open({map,anchor:m})}});items[id]={m,pos};return}
+        it.m.setTitle(label||"");const from=it.pos;it.pos=pos;glide(from,pos,p=>it.m.setPosition(p))},
+      line(id,pts){const it=items[id];if(!pts||pts.length<2)return api.drop(id);
+        if(it){it.l.setPath(pts);return}
+        items[id]={l:new g.Polyline({map,path:pts,strokeOpacity:0,icons:[{icon:{path:"M 0,-1 0,1",strokeOpacity:.8,strokeColor:"#1d70b7",scale:3},offset:"0",repeat:"14px"}]})}},
+      drop(id){const it=items[id];if(!it)return;(it.m||it.l).setMap(null);delete items[id]},
+      keepOnly(ids){Object.keys(items).forEach(id=>{if(!ids.has(id))api.drop(id)})},
+      fit(pts){if(!pts.length)return;if(pts.length===1){map.setCenter(pts[0]);map.setZoom(15);return}const b=new g.LatLngBounds();pts.forEach(p=>b.extend(p));map.fitBounds(b,60)},
+      focus(p){map.panTo(p);map.setZoom(16)},resize(){}};
+    return api}
+  const map=L.map(el,{zoomControl:true,scrollWheelZoom:false}).setView([RAIPUR.lat,RAIPUR.lng],12);
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>'}).addTo(map);
+  const api={lib,
+    pin(id,{lat,lng,kind,label}){const pos={lat,lng},it=items[id];
+      if(!it){const[w,h,ax,ay]=PIN_SIZE[kind];
+        const m=L.marker([lat,lng],{zIndexOffset:kind==="rider"?1000:0,title:label||"",icon:L.divIcon({className:"lm-pin "+kind,html:(kind==="rider"?'<span class="pin-pulse"></span>':"")+MAP_PINS[kind],iconSize:[w,h],iconAnchor:[ax,ay],popupAnchor:[0,-ay+4]})}).addTo(map);
+        if(label)m.bindPopup(esc(label));items[id]={m,pos,label};return}
+      if(label!==it.label){it.label=label;it.m.bindPopup(esc(label||""))}const from=it.pos;it.pos=pos;glide(from,pos,p=>it.m.setLatLng([p.lat,p.lng]))},
+    line(id,pts){const it=items[id];if(!pts||pts.length<2)return api.drop(id);const ll=pts.map(p=>[p.lat,p.lng]);
+      if(it){it.l.setLatLngs(ll);return}items[id]={l:L.polyline(ll,{color:"#1d70b7",weight:3,opacity:.75,dashArray:"6 9"}).addTo(map)}},
+    drop(id){const it=items[id];if(!it)return;map.removeLayer(it.m||it.l);delete items[id]},
+    keepOnly(ids){Object.keys(items).forEach(id=>{if(!ids.has(id))api.drop(id)})},
+    fit(pts){if(!pts.length)return;if(pts.length===1){map.setView([pts[0].lat,pts[0].lng],15);return}map.fitBounds(L.latLngBounds(pts.map(p=>[p.lat,p.lng])),{padding:[45,45],maxZoom:16})},
+    focus(p){map.setView([p.lat,p.lng],16)},resize(){map.invalidateSize()}};
+  setTimeout(()=>map.invalidateSize(),50);return api}
+
+// Patient side: a live "staff on the way" card inside each upcoming booking on My Bookings.
+function patientTracking(root,reloadBookings){let trips={},maps={},on=false;
+  const fetchTrips=async()=>{const{data,error}=await sb.from("trips").select("*").neq("status","ended");
+    if(error)return; // live tracking not set up yet: simply show nothing
+    const prev=trips;trips=Object.fromEntries((data||[]).map(t=>[t.booking_id,t]));
+    if(Object.keys(prev).some(id=>!trips[id]))reloadBookings();else draw()};
+  const draw=()=>root.querySelectorAll("[data-track]").forEach(box=>{const id=box.dataset.track,t=trips[id];
+    if(!t){box.hidden=true;box.innerHTML="";delete maps[id];return}
+    if(!box.firstChild)box.innerHTML=`<div class="tk-head"><span class="tk-live"><i></i>LIVE</span><b class="tk-title"></b></div>
+      <div class="tk-eta"></div><div class="tk-map"></div>
+      <div class="tk-foot"><small class="tk-upd"></small><a class="tk-call" href="tel:${BUSINESS.phone.replace(/\s/g,"")}">${PHONE_ICON}<span>Call lab</span></a></div>`;
+    box.hidden=false;paint(box,t)});
+  const paint=async(box,t)=>{const name=esc(t.staff_name||"Our collection staff"),arrived=t.status==="arrived",stale=!arrived&&Date.now()-new Date(t.updated_at)>180e3;
+    const rider=t.lat!=null&&!arrived?{lat:t.lat,lng:t.lng}:null,home=t.dest_lat!=null?{lat:t.dest_lat,lng:t.dest_lng}:null,km=rider&&home?geoKm(rider,home):null;
+    box.classList.toggle("arrived",arrived);
+    box.querySelector(".tk-title").innerHTML=arrived?`${name} has arrived at your address`:`${name} is on the way`;
+    box.querySelector(".tk-eta").innerHTML=arrived?`<b>Arrived</b><span>Please keep the patient ready for the sample.</span>`
+      :km!=null?`<b>${km<.15?"Arriving now":"~"+tripEta(km)+" min"}</b><span>${kmText(km)} away</span>`:`<b>On the way</b><span>Coming to your address now</span>`;
+    box.querySelector(".tk-upd").textContent=(stale?"⚠ Location last updated ":"Location updated ")+agoText(t.updated_at);
+    const mapEl=box.querySelector(".tk-map");if(!rider&&!home){mapEl.hidden=true;return}mapEl.hidden=false;
+    let m=maps[t.booking_id];if(!m)m=maps[t.booking_id]=makeLiveMap(mapEl).catch(()=>{mapEl.innerHTML='<p class="muted tk-nomap">Map couldn\'t load.</p>';return null});
+    m=await m;if(!m)return;
+    if(home)m.pin("home",{...home,kind:"home",label:"Your address"});else m.drop("home");
+    if(rider)m.pin("rider",{...rider,kind:"rider",label:t.staff_name||"Collection staff"});else m.drop("rider");
+    m.line("route",rider&&home?[rider,home]:null);m.fit([rider,home].filter(Boolean))};
+  return{draw(){maps={};draw()},start(){if(on)return;on=true;fetchTrips();let tm;
+    sb.channel("my-trips").on("postgres_changes",{event:"*",schema:"public",table:"trips"},()=>{clearTimeout(tm);tm=setTimeout(fetchTrips,300)}).subscribe();
+    setInterval(fetchTrips,20000)}}} // the poll also catches a trip ending (patients can't see ended trips, so no live event arrives)
+
+// Admin: every active trip on one live map.
+function adminLive(){const rowsEl=$("#liveRows");if(!rowsEl)return;let trips=[],map=null,mapP=null,fitted=-1;
+  const load=async()=>{const{data,error}=await sb.from("trips").select("*,bookings(ref,patient_name,address,area,slot,collect_date)").neq("status","ended").order("started_at",{ascending:false});
+    if(error){rowsEl.innerHTML=`<tr><td colspan="6" class="muted">${/trips/.test(error.message)?"Live tracking isn't set up yet. Run supabase/live_tracking.sql in the Supabase SQL Editor.":esc(error.message)}</td></tr>`;return}
+    trips=data||[];draw()};
+  const ensureMap=()=>{if(!mapP)mapP=makeLiveMap($("#adminMap")).then(m=>{map=m;paintMap()}).catch(()=>{$("#adminMap").innerHTML='<p class="muted" style="padding:20px">The map couldn\'t load. Check your internet connection.</p>'});
+    return mapP.then(()=>{if(map){map.resize();paintMap()}})};
+  const draw=()=>{const on=trips.filter(t=>t.status==="on_the_way").length,arr=trips.length-on;
+    const tile=$("#liveTile");if(tile)tile.textContent=on;$("#livePill").textContent=`${on} on the way${arr?` · ${arr} arrived`:""}`;
+    const cnt=$("#liveCount");if(cnt){cnt.textContent=trips.length||"";cnt.hidden=!trips.length}
+    rowsEl.innerHTML=trips.length?trips.map(t=>{const b=t.bookings||{},km=t.lat!=null&&t.dest_lat!=null&&t.status==="on_the_way"?geoKm(t,{lat:t.dest_lat,lng:t.dest_lng}):null,
+        stale=t.status==="on_the_way"&&Date.now()-new Date(t.updated_at)>180e3;
+      return`<tr><td><div class="user-name"><span class="user-avatar live-av">${SCOOTER_ICON}</span><div><b>${esc(t.staff_name||"Staff")}</b><br><small class="muted">started ${new Date(t.started_at).toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})}</small></div></div></td>
+        <td><b>${esc(b.patient_name||"")}</b><br><small class="muted">${esc(b.ref||"")} · ${esc(b.area||"")}</small></td>
+        <td>${t.status==="arrived"?'<span class="pill green">Arrived</span>':stale?'<span class="pill amber">No signal</span>':'<span class="pill blue">On the way</span>'}</td>
+        <td>${t.status==="arrived"?"—":km!=null?`<b>${kmText(km)}</b> · ~${tripEta(km)} min`:'<span class="muted">No address pin</span>'}</td>
+        <td>${agoText(t.updated_at)}</td>
+        <td style="white-space:nowrap">${t.lat!=null&&t.status==="on_the_way"?`<button type="button" class="light sm" data-live-focus="${t.booking_id}">Show on map</button> `:""}<button type="button" class="light sm" data-live-end="${t.booking_id}">End trip</button></td></tr>`}).join("")
+      :'<tr><td colspan="6" class="muted">No staff travelling right now. Trips appear here as soon as staff press "Start trip".</td></tr>';
+    if(map)paintMap()};
+  const paintMap=()=>{const ids=new Set(),pts=[];
+    trips.forEach(t=>{const b=t.bookings||{};
+      if(t.dest_lat!=null){const h={lat:t.dest_lat,lng:t.dest_lng};map.pin("h-"+t.booking_id,{...h,kind:"home",label:`${b.patient_name||"Patient"} · ${b.ref||""}`});ids.add("h-"+t.booking_id);pts.push(h)}
+      if(t.lat!=null&&t.status==="on_the_way"){const r={lat:t.lat,lng:t.lng};map.pin("r-"+t.booking_id,{...r,kind:"rider",label:`${t.staff_name||"Staff"} → ${b.patient_name||""}`});ids.add("r-"+t.booking_id);pts.push(r);
+        if(t.dest_lat!=null){map.line("l-"+t.booking_id,[r,{lat:t.dest_lat,lng:t.dest_lng}]);ids.add("l-"+t.booking_id)}}});
+    map.keepOnly(ids);if(pts.length!==fitted){map.fit(pts.length?pts:[RAIPUR]);fitted=pts.length}};
+  rowsEl.addEventListener("click",e=>{const f=e.target.closest("[data-live-focus]");
+    if(f){const t=trips.find(x=>x.booking_id===f.dataset.liveFocus);if(t&&map){map.focus({lat:t.lat,lng:t.lng});$("#adminMap").scrollIntoView({behavior:"smooth",block:"center"})}return}
+    const x=e.target.closest("[data-live-end]");if(!x)return;const t=trips.find(y=>y.booking_id===x.dataset.liveEnd);
+    const body=openModal("End this trip?",`<p>Stop live tracking for <b>${esc(t?.staff_name||"this staff member")}</b> going to <b>${esc(t?.bookings?.patient_name||"the patient")}</b>? The patient will stop seeing the map. Use this if staff forgot to end a trip.</p><div class="modal-actions"><button type="button" class="light" data-close>Keep tracking</button><button type="button" class="danger" id="liveEndOk">End trip</button></div>`);
+    body.querySelector("#liveEndOk").onclick=async ev=>{ev.target.disabled=true;const{error}=await sb.rpc("set_trip_status",{p_booking:x.dataset.liveEnd,p_status:"ended"});
+      if(error){ev.target.disabled=false;return fail(error)}closeModal();toast("Trip ended");load()}});
+  document.addEventListener("lm-tab",e=>{if(e.detail==="live")ensureMap()});
+  if(location.hash==="#live")ensureMap();
+  let tm;sb.channel("admin-trips").on("postgres_changes",{event:"*",schema:"public",table:"trips"},()=>{clearTimeout(tm);tm=setTimeout(load,300)}).subscribe();
+  setInterval(()=>{if(trips.length)draw()},15000);load()}
+
 async function initAccount(){const root=$("#myBookings");if(!root||!await guard())return;
   const n=new URLSearchParams(location.search).get("new");if(n)$("#newMsg").innerHTML=`<div class="notice">Booking <b>${esc(n)}</b> confirmed. Our staff will visit at your selected slot.</div>`;
-  let byId={};
-  const load=async()=>{const{data,error}=await sb.from("bookings").select("*,booking_items(name,instructions),reports(id,path)").order("created_at",{ascending:false});if(error)return fail(error);
+  let byId={};const track=patientTracking(root,()=>load());
+  const load=async()=>{const{data,error}=await sb.from("bookings").select("*,booking_items(name,price,instructions),reports(id,path,created_at)").order("created_at",{ascending:false});if(error)return fail(error);
   byId=Object.fromEntries(data.map(b=>[b.id,b]));
   root.innerHTML=data.length?data.map(b=>{const sm=statusMeta(b.status);
     return`<section class="job bk" data-status="${sm.cls}"><div class="jobhead"><span class="bk-ref">${esc(b.ref)}</span><span class="pill ${sm.cls}">${esc(b.status)}</span></div>
     <div class="patient">${ICONS.user}${esc(b.patient_name)}</div>
+    ${["Confirmed","Assigned"].includes(b.status)?`<div class="trackbox" data-track="${b.id}" hidden></div>`:""}
     <div class="bk-meta">
       <div class="bk-row">${ICONS.cal}<span>${fmt(b.collect_date)} · ${esc(b.slot)}</span></div>
       <div class="bk-row">${ICONS.pin}<span>${esc(b.address)}, ${esc(b.area)}</span></div>
@@ -465,13 +591,13 @@ async function initAccount(){const root=$("#myBookings");if(!root||!await guard(
       <a href="#" data-timeline="${b.id}" data-ref="${esc(b.ref)}">Track booking</a>
       <a href="receipt.html?id=${b.id}" target="_blank">${b.payment==="Paid"||b.payment==="Refunded"?"Receipt":"Booking summary"}</a>
       ${canChange(b)?`<a href="#" data-resched="${b.id}">Reschedule</a><a href="#" class="danger-link" data-cancel="${b.id}">Cancel booking</a>`:""}
-    </div></section>`}).join(""):`<div class="empty">No bookings yet. <a href="index.html#tests"><b>Browse tests</b></a></div>`};
+    </div></section>`}).join(""):`<div class="empty">No bookings yet. <a href="index.html#tests"><b>Browse tests</b></a></div>`;track.draw()};
   root.addEventListener("click",async e=>{
     const dl=e.target.closest("[data-path]");if(dl){const{data,error}=await sb.storage.from("reports").createSignedUrl(dl.dataset.path,120);if(error)return fail(error);window.open(data.signedUrl,"_blank");return}
     const pay=e.target.closest("[data-paynow]");if(pay){pay.disabled=true;const ok=await payOnline(pay.dataset.paynow,{name:_ctx?.profile?.full_name||"",email:_ctx?.user?.email||"",contact:_ctx?.profile?.phone||""});pay.disabled=false;if(ok)load();return}
     const cx=e.target.closest("[data-cancel]");if(cx){e.preventDefault();cancelDialog(byId[cx.dataset.cancel],load);return}
     const rs=e.target.closest("[data-resched]");if(rs){e.preventDefault();rescheduleDialog(byId[rs.dataset.resched],load)}});
-  load()}
+  load();track.start()}
 
 // ---------- receipt page (receipt.html?id=<booking id>) ----------
 async function initReceipt(){const root=$("#receipt");if(!root)return;const c=await guard();if(!c)return;
@@ -593,6 +719,143 @@ function liveHandovers(onData){
   load();return load}
 
 // ---------- admin ----------
+// Admin overview analytics: weekly / monthly / yearly, compared with the previous period.
+function periodRange(kind,off){const n=new Date();let s,e;
+  if(kind==="week"){s=new Date(n.getFullYear(),n.getMonth(),n.getDate());s.setDate(s.getDate()-((s.getDay()+6)%7)+7*off);e=new Date(s);e.setDate(e.getDate()+7)}
+  else if(kind==="month"){s=new Date(n.getFullYear(),n.getMonth()+off,1);e=new Date(n.getFullYear(),n.getMonth()+off+1,1)}
+  else{s=new Date(n.getFullYear()+off,0,1);e=new Date(n.getFullYear()+off+1,0,1)}
+  return{s,e}}
+function adminAnalytics(){if(!$("#kpiTiles"))return{setRows(){}};
+  let kind="week",off=0,rows=[];
+  const DOW=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"],MON=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const NOUN={week:"week",month:"month",year:"year"};
+  const inR=(d,r)=>{const t=new Date(d);return t>=r.s&&t<r.e};
+  const pct=(a,b)=>b?Math.round(a/b*100):0;
+  const dshort=d=>d.toLocaleDateString("en-IN",{day:"numeric",month:"short"});
+  const hrs=h=>h==null?"—":h<48?Math.round(h)+" h":(h/24).toFixed(1)+" days";
+  const slotStart=b=>{const d=new Date(String(b.collect_date).slice(0,10)+"T00:00:00");d.setHours(slotHour(b.slot)??0);return d};
+  const label=()=>{const{s,e}=periodRange(kind,off),last=new Date(e-864e5);
+    if(off===0)return"This "+NOUN[kind];if(off===-1)return"Last "+NOUN[kind];
+    return kind==="week"?`${dshort(s)} – ${dshort(last)} ${last.getFullYear()}`:kind==="month"?`${MON[s.getMonth()]} ${s.getFullYear()}`:String(s.getFullYear())};
+  // Every number for one date range.
+  const metrics=(r,first)=>{const B=rows.filter(b=>inR(b.created_at,r)),paid=B.filter(b=>b.payment==="Paid"),sum=a=>a.reduce((s,b)=>s+b.total,0);
+    const rep=rows.filter(b=>b.reports?.length&&b.collect_date).map(b=>({b,t:new Date(Math.min(...b.reports.map(x=>+new Date(x.created_at||b.created_at))))})).filter(x=>x.t>=r.s&&x.t<r.e)
+      .map(x=>(x.t-slotStart(x.b))/36e5).filter(h=>h>=0);
+    return{B,bookings:B.length,revenue:sum(paid),cash:sum(paid.filter(b=>b.payment_method==="Cash")),online:sum(paid.filter(b=>b.payment_method==="Online")),
+      avg:paid.length?Math.round(sum(paid)/paid.length):0,cancel:pct(B.filter(b=>b.status==="Cancelled").length,B.length),
+      newPts:Object.values(first).filter(t=>t>=r.s&&t<r.e).length,tat:rep.length?rep.reduce((a,h)=>a+h,0)/rep.length:null}};
+  const delta=(c,p,lowerBetter)=>{if(p==null||c==null)return"";if(!p)return c?`<i class="dl ${lowerBetter?"down":"up"}">New</i>`:"";const d=Math.round((c-p)/p*100);if(!d)return'<i class="dl">± 0%</i>';
+    const good=lowerBetter?d<0:d>0;return`<i class="dl ${good?"up":"down"}">${d>0?"▲":"▼"} ${Math.abs(d)}%</i>`};
+  // Horizontal bar list. items: [{label,value,tip}]
+  const hbars=(items,f=String,color="")=>{const max=Math.max(1,...items.map(i=>i.value));
+    return items.length?items.map(i=>`<div class="hb" data-tip="${esc(i.tip||i.label+": "+f(i.value))}"><span class="hb-l">${esc(i.label)}</span><span class="hb-t"><span class="hb-f ${color}" style="width:${i.value?Math.max(3,i.value/max*100):0}%"></span></span><b class="hb-v">${f(i.value)}</b></div>`).join("")
+      :'<p class="muted an-empty">No data for this period.</p>'};
+  const count=(arr,key)=>{const m={};arr.forEach(x=>{const k=key(x);if(k)m[k]=(m[k]||0)+1});return m};
+  const draw=()=>{const r=periodRange(kind,off),p=periodRange(kind,off-1),now=new Date();
+    if(off===0)p.e=new Date(p.s.getTime()+(now-r.s)); // like-for-like: same point in the previous period
+    $("#perLabel").textContent=label();$("#perNext").disabled=off>=0;
+    document.querySelectorAll("#periodSeg button").forEach(b=>b.classList.toggle("on",b.dataset.p===kind));
+    const first={};rows.slice().reverse().forEach(b=>{if(b.user_id&&!first[b.user_id])first[b.user_id]=new Date(b.created_at)});
+    const c=metrics(r,first),q=metrics(p,first),vs=off===0?`vs same time last ${NOUN[kind]}`:`vs previous ${NOUN[kind]}`;
+    const tile=(name,val,d,note)=>`<div class="stat"><span>${name}</span><b>${val}</b><em>${d||""} <small>${d?vs:note||""}</small></em></div>`;
+    $("#kpiTiles").innerHTML=[
+      tile("Bookings",c.bookings,delta(c.bookings,q.bookings)),
+      tile("Paid revenue",money(c.revenue),delta(c.revenue,q.revenue)),
+      tile("Cash revenue",money(c.cash),delta(c.cash,q.cash)),
+      tile("Online revenue",money(c.online),delta(c.online,q.online)),
+      tile("Avg booking value",money(c.avg),delta(c.avg,q.avg)),
+      tile("New patients",c.newPts,delta(c.newPts,q.newPts),"First booking ever"),
+      tile("Cancellation rate",c.cancel+"%",delta(c.cancel,q.cancel,true),"Of bookings made"),
+      tile("Avg report time",hrs(c.tat),c.tat!=null&&q.tat!=null?delta(c.tat,q.tat,true):"","Collection → PDF uploaded")].join("");
+    // Revenue trend: one bar per day (week/month) or per month (year).
+    const n=kind==="year"?12:Math.round((r.e-r.s)/864e5),bk=Array.from({length:n},()=>({rev:0,cnt:0}));
+    c.B.forEach(b=>{const d=new Date(b.created_at),i=kind==="year"?d.getMonth():Math.round((new Date(d.getFullYear(),d.getMonth(),d.getDate())-r.s)/864e5);
+      if(bk[i]){bk[i].cnt++;if(b.payment==="Paid")bk[i].rev+=b.total}});
+    const bDate=i=>kind==="year"?new Date(r.s.getFullYear(),i,1):new Date(r.s.getFullYear(),r.s.getMonth(),r.s.getDate()+i);
+    const bName=i=>kind==="year"?MON[i]+" "+r.s.getFullYear():kind==="week"?DOW[i]+" "+dshort(bDate(i)):dshort(bDate(i));
+    const axis=i=>kind==="year"?MON[i]:kind==="week"?DOW[i]:(i===0||(i+1)%5===0?String(i+1):"");
+    const max=Math.max(1,...bk.map(x=>x.rev)),best=bk.reduce((a,x,i)=>x.rev>bk[a].rev?i:a,0);
+    $("#trendNote").textContent=`Total ${money(c.revenue)} · peak ${money(bk[best].rev)}`;
+    $("#trendChart").innerHTML=`<div class="vb-max">${money(max)}</div><div class="vb-cols">${bk.map((x,i)=>{const fut=bDate(i)>now;
+      return`<div class="vb ${fut?"fut":""}" data-tip="${esc(bName(i))} · ${money(x.rev)} paid · ${x.cnt} booking${x.cnt===1?"":"s"}"><span class="vb-f" style="height:${x.rev?Math.max(2,x.rev/max*100):0}%"></span><small>${axis(i)}</small></div>`}).join("")}</div>`;
+    // Payment mix
+    const tot=c.cash+c.online,pend=c.B.filter(b=>b.payment==="Pending"&&b.status!=="Cancelled").reduce((s,b)=>s+b.total,0),
+      refd=c.B.filter(b=>/Refund/.test(b.payment)).reduce((s,b)=>s+b.total,0);
+    $("#payMix").innerHTML=tot?`<div class="stack"><span class="st-cash" style="width:${c.cash/tot*100}%" data-tip="Cash · ${money(c.cash)} (${pct(c.cash,tot)}%)"></span><span class="st-online" style="width:${c.online/tot*100}%" data-tip="Online · ${money(c.online)} (${pct(c.online,tot)}%)"></span></div>
+      <div class="legend"><span><i class="sw st-cash"></i>Cash <b>${money(c.cash)}</b> · ${pct(c.cash,tot)}%</span><span><i class="sw st-online"></i>Online <b>${money(c.online)}</b> · ${pct(c.online,tot)}%</span></div>
+      <p class="muted mini">Still unpaid: <b>${money(pend)}</b> · Refunds: <b>${money(refd)}</b></p>`:`<p class="muted an-empty">No paid bookings in this period.${pend?` Unpaid: <b>${money(pend)}</b>`:""}</p>`;
+    // Top tests (count + revenue), areas, slots, days
+    const live=c.B.filter(b=>b.status!=="Cancelled"),tm={};
+    live.forEach(b=>(b.booking_items||[]).forEach(it=>{const t=tm[it.name]||(tm[it.name]={n:0,rev:0});t.n++;t.rev+=it.price||0}));
+    const tests=Object.entries(tm).sort((a,b)=>b[1].n-a[1].n||b[1].rev-a[1].rev);
+    $("#topTests").innerHTML=hbars(tests.slice(0,6).map(([k,v])=>({label:k,value:v.n,tip:`${k}: booked ${v.n}× · ${money(v.rev)}`})),v=>v+"×");
+    const areas=Object.entries(count(live,b=>(b.area||"").trim()||"Not given")).sort((a,b)=>b[1]-a[1]);
+    $("#topAreas").innerHTML=hbars(areas.slice(0,6).map(([k,v])=>({label:k,value:v,tip:`${k}: ${v} booking${v===1?"":"s"} (${pct(v,live.length)}%)`})),String,"teal");
+    const sl=count(live,b=>b.slot),slots=[...SLOTS,...Object.keys(sl).filter(s=>!SLOTS.includes(s))];
+    $("#slotChart").innerHTML=live.length?hbars(slots.map(s=>({label:s,value:sl[s]||0,tip:`${s}: ${sl[s]||0} bookings (${pct(sl[s]||0,live.length)}%)`}))):hbars([]);
+    const dw=count(live,b=>b.collect_date?DOW[(new Date(String(b.collect_date).slice(0,10)+"T00:00:00").getDay()+6)%7]:null);
+    $("#dowChart").innerHTML=live.length?hbars(DOW.map(d=>({label:d,value:dw[d]||0,tip:`${d}: ${dw[d]||0} collections`}))):hbars([]);
+    // Patients: new vs returning, gender, age groups
+    const ret=c.B.filter(b=>first[b.user_id]&&first[b.user_id]<new Date(b.created_at)).length,g=count(c.B,b=>b.patient_gender||"Not given");
+    const yrs=b=>b.patient_age==null?null:(b.patient_age_unit&&b.patient_age_unit!=="years")?0:b.patient_age;
+    const AG=[["0–12",0,12],["13–17",13,17],["18–35",18,35],["36–59",36,59],["60+",60,999]];
+    const ag=AG.map(([l,a,z])=>({label:l+" yrs",value:c.B.filter(b=>{const y=yrs(b);return y!=null&&y>=a&&y<=z}).length}));
+    $("#patientMix").innerHTML=c.B.length?`<p class="mini"><b>${c.B.length-ret}</b> first-time · <b>${ret}</b> returning (${pct(ret,c.B.length)}% repeat)</p>
+      <div class="sub-h">Gender</div>${hbars(["Female","Male","Other","Not given"].filter(k=>g[k]).map(k=>({label:k,value:g[k]})),String,"teal")}
+      <div class="sub-h">Age group</div>${hbars(ag)}`:hbars([]);
+    // Funnel
+    const after=s=>STATUSES.indexOf(s)>=STATUSES.indexOf("Sample collected")&&s!=="Cancelled",
+      F=[["Booked",c.B.length],["Sample collected",c.B.filter(b=>after(b.status)).length],["Report delivered",c.B.filter(b=>b.reports?.length).length],["Paid",c.B.filter(b=>b.payment==="Paid").length]];
+    $("#funnel").innerHTML=c.B.length?hbars(F.map(([l,v])=>({label:l,value:v,tip:`${l}: ${v} (${pct(v,c.B.length)}% of booked)`})),v=>`${v} · ${pct(v,c.B.length)}%`):hbars([]);
+    // Smart insights: plain-language takeaways.
+    const ins=[],add=(ic,t)=>ins.push(`<li><span class="ic">${ic}</span><span>${t}</span></li>`);
+    if(!c.B.length)add("📭",`No bookings ${label().toLowerCase()} yet.`);
+    else{
+      if(q.revenue||c.revenue){const d=q.revenue?Math.round((c.revenue-q.revenue)/q.revenue*100):null;
+        add(d==null?"🚀":d>=0?"📈":"📉",d==null?`Revenue of <b>${money(c.revenue)}</b>. Nothing in the previous ${NOUN[kind]} to compare with.`:`Revenue is <b>${d>=0?"up":"down"} ${Math.abs(d)}%</b> (${money(c.revenue)} vs ${money(q.revenue)}) ${vs}.`)}
+      if(bk[best].rev)add("🏆",`Best ${kind==="year"?"month":"day"}: <b>${esc(bName(best))}</b> with ${money(bk[best].rev)}.`);
+      if(tests[0])add("🧪",`<b>${esc(tests[0][0])}</b> is the most booked test (${tests[0][1].n}×, ${money(tests[0][1].rev)}).`);
+      const topSlot=Object.entries(sl).sort((a,b)=>b[1]-a[1])[0];
+      if(topSlot&&live.length>=3&&pct(topSlot[1],live.length)>=40)add("⏰",`<b>${esc(topSlot[0])}</b> gets ${pct(topSlot[1],live.length)}% of bookings. Consider extra staff or capacity for that slot.`);
+      if(areas[0]&&areas[0][0]!=="Not given"&&live.length>=3)add("📍",`Most bookings come from <b>${esc(areas[0][0])}</b> (${pct(areas[0][1],live.length)}%). A good place for local promotion.`);
+      if(c.B.length>=3)add("🔁",`${pct(ret,c.B.length)}% of bookings are from returning patients.${pct(ret,c.B.length)<20?" Retest reminders could bring more people back.":""}`);
+      if(c.cancel>=15&&c.B.length>=3)add("⚠️",`<b>${c.cancel}% of bookings were cancelled.</b> Worth calling a few patients to ask why.`);
+      if(tot>=1000&&pct(c.online,tot)<25)add("💳",`Only ${pct(c.online,tot)}% paid online. A small online-payment discount could cut cash handling.`)}
+    const overdue=rows.filter(b=>!b.reports?.length&&after(b.status)&&b.collect_date&&now-slotStart(b)>24*36e5).length;
+    if(overdue)add("⏳",`<b>${overdue} report${overdue===1?" is":"s are"} overdue</b> (sample collected over 24 h ago, no PDF yet). <a href="#bookings">Check bookings →</a>`);
+    $("#insights").innerHTML=ins.join("")};
+  $("#periodSeg").onclick=e=>{const b=e.target.closest("[data-p]");if(!b)return;kind=b.dataset.p;off=0;try{localStorage.setItem("lm_period",kind)}catch(_){}draw()};
+  $("#perPrev").onclick=()=>{off--;draw()};$("#perNext").onclick=()=>{if(off<0){off++;draw()}};
+  // Click the period label to jump straight to any week, month or year.
+  const pick=$("#perPick"),lbl=$("#perLabel");let pickYear;
+  const monday=d=>{const m=new Date(d.getFullYear(),d.getMonth(),d.getDate());m.setDate(m.getDate()-((m.getDay()+6)%7));return m};
+  const closePick=()=>{pick.hidden=true;lbl.setAttribute("aria-expanded","false")};
+  const go=o=>{off=Math.min(0,o);closePick();draw()};
+  const drawPick=()=>{const now=new Date(),ny=now.getFullYear(),cur=periodRange(kind,off).s;
+    const oldest=rows.length?new Date(rows[rows.length-1].created_at).getFullYear():ny,years=[];for(let y=ny;y>=Math.min(oldest,ny-4);y--)years.push(y);
+    if(kind==="year")pick.innerHTML=`<div class="pp-h">Choose a year</div><div class="pp-grid">${years.map(y=>`<button type="button" data-y="${y}" class="${y===cur.getFullYear()?"on":""}">${y}</button>`).join("")}</div>`;
+    else if(kind==="month")pick.innerHTML=`<div class="pp-year"><button type="button" class="light sm" data-yr="-1" aria-label="Previous year">‹</button><b>${pickYear}</b><button type="button" class="light sm" data-yr="1" aria-label="Next year" ${pickYear>=ny?"disabled":""}>›</button></div>
+      <div class="pp-grid">${MON.map((m,i)=>`<button type="button" data-m="${i}" class="${pickYear===cur.getFullYear()&&i===cur.getMonth()?"on":""}" ${pickYear===ny&&i>now.getMonth()?"disabled":""}>${m}</button>`).join("")}</div>`;
+    else pick.innerHTML=`<div class="pp-h">Pick any day in the week</div><input type="date" id="ppDate" max="${today()}" value="${cur.toLocaleDateString("en-CA")}"><button type="button" class="pp-now" data-now>Go to this week</button>`;
+    const d=$("#ppDate");if(d)d.onchange=()=>{if(!d.value)return;go(Math.round((monday(new Date(d.value+"T00:00:00"))-monday(new Date()))/(7*864e5)))}};
+  lbl.onclick=e=>{e.stopPropagation();if(!pick.hidden)return closePick();pickYear=periodRange(kind,off).s.getFullYear();drawPick();pick.hidden=false;lbl.setAttribute("aria-expanded","true")};
+  pick.onclick=e=>{e.stopPropagation();const b=e.target.closest("button");if(!b||b.disabled)return;const now=new Date();
+    if(b.dataset.yr){pickYear+=+b.dataset.yr;return drawPick()}
+    if(b.dataset.m)return go((pickYear-now.getFullYear())*12+(+b.dataset.m-now.getMonth()));
+    if(b.dataset.y)return go(+b.dataset.y-now.getFullYear());
+    if("now" in b.dataset)go(0)};
+  document.addEventListener("click",e=>{if(!pick.hidden&&!e.target.closest(".per-wrap"))closePick()});
+  document.addEventListener("keydown",e=>{if(e.key==="Escape"&&!pick.hidden)closePick()});
+  $("#periodSeg").addEventListener("click",closePick);
+  try{const k=localStorage.getItem("lm_period");if(NOUN[k])kind=k}catch(_){}
+  // Shared hover/tap tooltip for every chart mark.
+  const tip=$("#chartTip"),ov=$('[data-tab="overview"]');
+  const show=(el,x,y)=>{tip.textContent=el.dataset.tip;tip.hidden=false;const w=tip.offsetWidth;tip.style.left=Math.max(8,Math.min(innerWidth-w-8,x-w/2))+"px";tip.style.top=Math.max(8,y-tip.offsetHeight-12)+"px"};
+  ov.addEventListener("mousemove",e=>{const el=e.target.closest("[data-tip]");if(el)show(el,e.clientX,e.clientY);else tip.hidden=true});
+  ov.addEventListener("mouseleave",()=>tip.hidden=true);
+  ov.addEventListener("click",e=>{const el=e.target.closest("[data-tip]");if(el){const r=el.getBoundingClientRect();show(el,r.left+r.width/2,r.top)}else tip.hidden=true});
+  draw();
+  return{setRows(r){rows=r;draw()}}}
 async function initAdmin(){const body=$("#bookingRows");if(!body||!await guard(["admin"],"login.html"))return;
   $("#logout").onclick=async e=>{e.preventDefault();await sb.auth.signOut();location.href="login.html"};
   // Sidebar tabs: the URL hash (#bookings, #reports...) decides which section is visible.
@@ -601,6 +864,7 @@ async function initAdmin(){const body=$("#bookingRows");if(!body||!await guard([
     if((valid==="users"||valid==="staffaccess")&&refreshUsers)refreshUsers();
     document.querySelectorAll("[data-tab]").forEach(s=>s.hidden=s.dataset.tab!==valid);
     document.querySelectorAll("[data-tab-link]").forEach(a=>a.classList.toggle("active",a.dataset.tabLink===valid));
+    document.dispatchEvent(new CustomEvent("lm-tab",{detail:valid}));
     window.scrollTo(0,0)};
   window.addEventListener("hashchange",showTab);showTab();
   // --- Cash tab: who collected what, what was handed over, what's still with staff ---
@@ -622,13 +886,11 @@ async function initAdmin(){const body=$("#bookingRows");if(!body||!await guard([
   $("#cashHandovers").addEventListener("click",async e=>{const b=e.target.closest("[data-receive]");if(!b)return;b.disabled=true;
     const{error}=await sb.from("cash_handovers").update({received:true,received_at:new Date().toISOString()}).eq("id",b.dataset.receive);
     if(error){b.disabled=false;return fail(error)}toast("Marked as received")});
-  bookingsTable(body,rows=>{adminRows=rows;drawCash();
+  const analytics=adminAnalytics();adminLive();
+  bookingsTable(body,rows=>{adminRows=rows;drawCash();analytics.setRows(rows);
     $("#recentRows").innerHTML=rows.slice(0,5).map(b=>`<tr><td><b>${esc(b.ref)}</b></td><td>${esc(b.patient_name)}</td><td>${fmt(b.collect_date)} · ${esc(b.slot)}</td><td>${money(b.total)}</td><td><span class="pill ${statusMeta(b.status).cls}">${esc(b.status)}</span></td><td>${esc(b.payment)} · ${esc(b.payment_method||"Cash")}</td></tr>`).join("")||'<tr><td colspan="6" class="muted">No bookings yet.</td></tr>';
-    const t=today(),live=rows.filter(x=>x.status!=="Cancelled"),paid=rows.filter(x=>x.payment==="Paid");
-    $("#bookingCount").textContent=rows.length;$("#todayCount").textContent=rows.filter(x=>x.created_at.slice(0,10)===t).length;
-    $("#revenue").textContent=money(paid.reduce((s,x)=>s+x.total,0));
-    $("#cashRevenue").textContent=money(paid.filter(x=>x.payment_method==="Cash").reduce((s,x)=>s+x.total,0));
-    $("#onlineRevenue").textContent=money(paid.filter(x=>x.payment_method==="Online").reduce((s,x)=>s+x.total,0));
+    const t=today(),live=rows.filter(x=>x.status!=="Cancelled");
+    $("#bookingCount").textContent=rows.length;$("#todayCount").textContent=rows.filter(x=>new Date(x.created_at).toLocaleDateString("en-CA")===t).length;
     $("#pendingCount").textContent=live.filter(x=>["Confirmed","Assigned"].includes(x.status)).length;
     $("#labCount").textContent=live.filter(x=>["Handed over to lab","Lab received sample","Processing started"].includes(x.status)).length;
     $("#repPending").textContent=live.filter(x=>!x.reports.length).length});
@@ -641,11 +903,12 @@ async function initAdmin(){const body=$("#bookingRows");if(!body||!await guard([
       sb.from("bookings").select("user_id,address,area,created_at").order("created_at",{ascending:false})]);
     if(error)return fail(error);
     users=(profiles||[]).map(p=>{const mine=(bks||[]).filter(b=>b.user_id===p.id);
-      return{...p,saved:(addrs||[]).filter(a=>a.user_id===p.id),bookings:mine.length,lastAddr:mine[0]?`${mine[0].address}, ${mine[0].area}`:""}});
+      return{...p,saved:(addrs||[]).filter(a=>a.user_id===p.id),bookings:mine.length,lastAt:mine[0]?.created_at||null,lastAddr:mine[0]?`${mine[0].address}, ${mine[0].area}`:""}});
     drawUsers()};
   refreshUsers=async()=>{await loadUsers();drawStaffAccess()};
-  const drawUsers=()=>{const q=$("#userSearch").value.trim().toLowerCase(),role=$("#userRole").value;
-    const list=users.filter(u=>(role==="all"||u.role===role)&&[u.full_name,u.phone,u.email,u.gender,u.lastAddr,...u.saved.map(a=>`${a.label} ${a.address} ${a.area}`)].join(" ").toLowerCase().includes(q));
+  const filteredUsers=()=>{const q=$("#userSearch").value.trim().toLowerCase(),role=$("#userRole").value;
+    return users.filter(u=>(role==="all"||u.role===role)&&[u.full_name,u.phone,u.email,u.gender,u.lastAddr,...u.saved.map(a=>`${a.label} ${a.address} ${a.area}`)].join(" ").toLowerCase().includes(q))};
+  const drawUsers=()=>{const list=filteredUsers();
     $("#userCount").textContent=`${list.length} ${list.length===1?"user":"users"}`;
     $("#userRows").innerHTML=list.map(u=>{
       const addr=u.saved.length?u.saved.map(a=>`<div class="user-addr">${a.label?`<b>${esc(a.label)}:</b> `:""}${esc(a.address)}, ${esc(a.area)}</div>`).join("")
@@ -679,6 +942,22 @@ async function initAdmin(){const body=$("#bookingRows");if(!body||!await guard([
       const{error}=await sb.rpc("set_user_role",{p_user:u.id,p_role:toStaff?"staff":"patient"});
       if(error){ev.target.disabled=false;return fail(/set_user_role/.test(error.message)?new Error("Run supabase/staff_access.sql in Supabase first"):error)}
       closeModal();toast(toStaff?`${u.full_name||"Account"} now has staff access`:"Staff access removed");$("#saSearch").value="";refreshUsers()}});
+  // Export the users currently shown (search + role filter applied) as a real Excel file.
+  $("#exportUsers").onclick=async()=>{const btn=$("#exportUsers"),list=filteredUsers();if(!list.length)return toast("No users to export",false);
+    const d=v=>v?new Date(v).toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"numeric"}):"";
+    const header=["Name","Role","Age","Gender","Phone","Email","Saved addresses","Last booking address","Bookings","Last booking","Joined"];
+    const data=list.map(u=>[u.full_name||"",u.role||"",u.age??"",u.gender||"",u.phone||"",u.email||"",
+      u.saved.map(a=>`${a.label?a.label+": ":""}${a.address}, ${a.area}`).join("\n"),u.lastAddr||"",u.bookings,d(u.lastAt),d(u.created_at)]);
+    const role=$("#userRole").value,name=`LabMitra-users${role!=="all"?"-"+role:""}-${today()}`;
+    btn.disabled=true;
+    try{if(!window.XLSX)await new Promise((ok,no)=>{const s=document.createElement("script");s.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";s.onload=ok;s.onerror=no;document.head.appendChild(s)});
+      const ws=XLSX.utils.aoa_to_sheet([header,...data]);
+      ws["!cols"]=header.map((h,i)=>({wch:Math.min(50,Math.max(h.length,...data.map(r=>Math.max(...String(r[i]).split("\n").map(l=>l.length))))+2)}));
+      ws["!autofilter"]={ref:XLSX.utils.encode_range({s:{r:0,c:0},e:{r:data.length,c:header.length-1}})};
+      const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Users");XLSX.writeFile(wb,name+".xlsx");
+      toast(`Exported ${list.length} ${list.length===1?"user":"users"}`)}
+    catch(_){downloadCSV(name+".csv",header,data);toast("Excel export unavailable, downloaded as CSV (opens in Excel)")}
+    finally{btn.disabled=false}};
   $("#userSearch").addEventListener("input",drawUsers);$("#userRole").addEventListener("change",drawUsers);
 
   // --- Test Pricing tab ---
@@ -731,7 +1010,7 @@ async function initStaff(){const root=$("#staffJobs");if(!root)return;const c=aw
   // One shared staff account, so every active booking is shown (no per-person assignment).
   const drawJobs=rows=>{const data=rows.filter(j=>!["Report ready","Cancelled"].includes(j.status)).sort((a,b)=>String(a.collect_date).localeCompare(String(b.collect_date)));
   $("#jobCount").textContent=data.length;
-  root.innerHTML=data.length?data.map(j=>`<section class="job"><div class="jobhead"><b>${esc(j.ref)}</b><span style="display:flex;gap:10px;align-items:center"><a href="#" class="tl-link" data-timeline="${j.id}" data-ref="${esc(j.ref)}">Timeline</a><span class="pill amber" id="st-${j.id}">${esc(j.status)}</span></span></div>${j.sample_id?`<div class="sample-box"><span>Sample ID · write on every tube</span><b>${esc(j.sample_id)}</b></div>`:""}<div class="patient">${esc(j.patient_name)}${j.patient_age!=null?` <span class="muted" style="font-size:13px;font-weight:600">· ${ageText(j.patient_age,j.patient_age_unit)} · ${esc(j.patient_gender||"")}</span>`:""}</div><div class="detail">Collection: ${fmt(j.collect_date)} · ${esc(j.slot)}<br>Area: ${esc(j.area)}<br>Address: ${esc(j.address)}</div><div class="tests">${j.booking_items.map(i=>esc(i.name)).join(", ")}</div>${j.booking_items.filter(i=>i.instructions).map(i=>prepLine(`${i.name}: ${i.instructions}`)).join("")}${contactRow(j)}<div id="pay-${j.id}">${payLine(j)}</div><div class="job-actions"><select id="up-${j.id}"><option>Sample collected</option><option>Handed over to lab</option><option>Lab received sample</option><option>Processing started</option></select><button class="green" data-job="${j.id}">Save update</button></div></section>`).join(""):'<div class="empty">No active bookings right now.</div>'};
+  root.innerHTML=data.length?data.map(j=>`<section class="job"><div class="jobhead"><b>${esc(j.ref)}</b><span style="display:flex;gap:10px;align-items:center"><a href="#" class="tl-link" data-timeline="${j.id}" data-ref="${esc(j.ref)}">Timeline</a><span class="pill amber" id="st-${j.id}">${esc(j.status)}</span></span></div>${j.sample_id?`<div class="sample-box"><span>Sample ID · write on every tube</span><b>${esc(j.sample_id)}</b></div>`:""}<div class="patient">${esc(j.patient_name)}${j.patient_age!=null?` <span class="muted" style="font-size:13px;font-weight:600">· ${ageText(j.patient_age,j.patient_age_unit)} · ${esc(j.patient_gender||"")}</span>`:""}</div><div class="detail">Collection: ${fmt(j.collect_date)} · ${esc(j.slot)}<br>Area: ${esc(j.area)}<br>Address: ${esc(j.address)}</div><div class="tests">${j.booking_items.map(i=>esc(i.name)).join(", ")}</div>${j.booking_items.filter(i=>i.instructions).map(i=>prepLine(`${i.name}: ${i.instructions}`)).join("")}${contactRow(j)}${tripBtn(j)?`<div class="trip-row">${tripBtn(j)}</div>`:""}<div id="pay-${j.id}">${payLine(j)}</div><div class="job-actions"><select id="up-${j.id}"><option>Sample collected</option><option>Handed over to lab</option><option>Lab received sample</option><option>Processing started</option></select><button class="green" data-job="${j.id}">Save update</button></div></section>`).join(""):'<div class="empty">No active bookings right now.</div>'};
   // Section slider: tabs + swipe. The URL hash (#all, #active, #reports) remembers the tab on reload.
   const TABS=["route","active","reports","history"];
   $(".seg-thumb").style.width=`calc((100% - 10px) / ${TABS.length})`;
@@ -769,7 +1048,7 @@ async function initStaff(){const root=$("#staffJobs");if(!root)return;const c=aw
           <div class="stop-top"><b>${esc(b.patient_name)}</b>${b.patient_age!=null?`<span class="muted">${ageText(b.patient_age,b.patient_age_unit)} · ${esc(b.patient_gender||"")}</span>`:""}${b.sample_id?`<span class="sample-tag">${esc(b.sample_id)}</span>`:""}</div>
           <div class="muted stop-addr">${esc(b.area)} · ${esc(b.address)}</div>
           <div class="stop-tests">${b.booking_items.map(i=>esc(i.name)).join(", ")}</div>
-          <div class="stop-actions">${digits?`<a class="contact-btn call sm" href="tel:${tel}">${PHONE_ICON}<span>Call</span></a>`:""}<a class="contact-btn map sm" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(addrOf(b))}">${NAV_ICON}<span>Directions</span></a>${pay}${prep}</div>
+          <div class="stop-actions">${tripBtn(b)}${digits?`<a class="contact-btn call sm" href="tel:${tel}">${PHONE_ICON}<span>Call</span></a>`:""}<a class="contact-btn map sm" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(addrOf(b))}">${NAV_ICON}<span>Directions</span></a>${pay}${prep}</div>
         </div></div>`}).join("")});
     $("#routeList").innerHTML=(html||`<div class="empty">No visits left ${routeDay?"for tomorrow":"for today"}.</div>`)
       +(done.length?`<details class="route-done"><summary>${done.length} already collected</summary>${done.map(b=>`<div><b>${esc(b.patient_name)}</b> · ${esc(b.slot)} · <span class="muted">${esc(b.status)}</span></div>`).join("")}</details>`:"")};
@@ -818,6 +1097,79 @@ async function initStaff(){const root=$("#staffJobs");if(!root)return;const c=aw
     const{error}=await sb.from("cash_handovers").insert({handed_by:who.value.trim(),amount,note:hf.note.value.trim()||null});
     b.disabled=false;if(error)return fail(error);hf.reset();hf.hidden=true;toast("Handover recorded. The office will confirm it.")};
 
+  // --- Live trip: this phone shares its location with the patient while travelling (like delivery apps) ---
+  const TRIP_KEY="lm_trip";let liveTrips={},trip=null,tripsOk=false;
+  let watchId=null,beat=null,wakeLock=null,lastSent=0,lastSentPos=null,lastPos=null,sending=false,gpsNote="";
+  const bar=document.createElement("div");bar.className="trip-bar";bar.hidden=true;$("#staffSeg").before(bar);
+  const saveTrip=()=>{try{trip?localStorage.setItem(TRIP_KEY,JSON.stringify(trip)):localStorage.removeItem(TRIP_KEY)}catch{}};
+  const redrawTrips=()=>{if(staffRows.length){drawJobs(staffRows);drawRoute()}drawBar()};
+  const loadTrips=async()=>{const{data,error}=await sb.from("trips").select("*").neq("status","ended");if(error){tripsOk=false;return}
+    tripsOk=true;liveTrips=Object.fromEntries((data||[]).map(t=>[t.booking_id,t]));
+    if(trip&&!liveTrips[trip.id])stopLocal(trip.arrived?"":"This trip has ended. Location sharing stopped.");
+    else if(!trip)resumeTrip();
+    redrawTrips()};
+  const resumeTrip=()=>{let saved=null;try{saved=JSON.parse(localStorage.getItem(TRIP_KEY)||"null")}catch{}
+    if(!saved)return;const t=liveTrips[saved.id];if(!t){trip=null;saveTrip();return}
+    trip=saved;if(t.status==="on_the_way")beginWatch();else trip.arrived=true};
+  // Where the patient lives (used only if they never saved a map pin for this address).
+  const geocode=async b=>{try{const ctl=new AbortController(),tm=setTimeout(()=>ctl.abort(),5000);
+      const r=await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=in&q=${encodeURIComponent(addrOf(b))}`,{signal:ctl.signal});clearTimeout(tm);
+      const j=await r.json();return j[0]?{lat:+j[0].lat,lng:+j[0].lon}:null}catch{return null}};
+  const send=async force=>{if(!trip||trip.arrived||!lastPos||sending)return;const now=Date.now(),moved=lastSentPos?geoKm(lastPos,lastSentPos)*1000:1e9;
+    if(now-lastSent<4000)return;if(!force&&now-lastSent<8000&&moved<25)return;if(!force&&moved<5&&now-lastSent<25000)return;
+    sending=true;const c=lastPos;
+    const{data,error}=await sb.rpc("update_trip",{p_booking:trip.id,p_lat:c.lat,p_lng:c.lng,p_accuracy:c.acc,p_heading:c.heading,p_speed:c.speed});
+    sending=false;if(error){gpsNote="Connection problem, retrying…";return drawBar()}
+    lastSent=now;lastSentPos=c;gpsNote="";if(data==="ended")return stopLocal("This trip was ended from the office. Location sharing stopped.");drawBar()};
+  const onPos=p=>{const k=p.coords;lastPos={lat:k.latitude,lng:k.longitude,acc:Math.round(k.accuracy||0),heading:Number.isFinite(k.heading)?k.heading:null,speed:Number.isFinite(k.speed)?k.speed:null};
+    if(gpsNote==="Weak GPS signal…")gpsNote="";send();drawBar()};
+  const onErr=e=>{if(e.code===1){toast("Location permission was turned off, so live tracking stopped",false);return endTrip(true)}gpsNote="Weak GPS signal…";drawBar()};
+  const keepAwake=async()=>{try{if("wakeLock" in navigator&&document.visibilityState==="visible"&&!wakeLock){wakeLock=await navigator.wakeLock.request("screen");wakeLock.addEventListener("release",()=>wakeLock=null)}}catch{}};
+  const beginWatch=()=>{if(watchId!=null||!("geolocation" in navigator))return;
+    watchId=navigator.geolocation.watchPosition(onPos,onErr,{enableHighAccuracy:true,maximumAge:5000,timeout:30000});
+    beat=setInterval(()=>{send(Date.now()-lastSent>25000);drawBar()},5000);keepAwake()};
+  const stopWatch=()=>{if(watchId!=null)navigator.geolocation.clearWatch(watchId);watchId=null;clearInterval(beat);beat=null;try{wakeLock&&wakeLock.release()}catch{};wakeLock=null};
+  const stopLocal=msg=>{stopWatch();trip=null;lastPos=lastSentPos=null;lastSent=0;gpsNote="";saveTrip();if(msg)toast(msg);redrawTrips()};
+  document.addEventListener("visibilitychange",()=>{if(trip&&!trip.arrived&&document.visibilityState==="visible"){keepAwake();send(true)}});
+  const startTrip=async(id,btn)=>{const b=staffRows.find(x=>x.id===id);if(!b)return;
+    const name=who.value.trim();if(!name){toast("Type your name at the top first, so the patient knows who is coming",false);window.scrollTo({top:0,behavior:"smooth"});return who.focus()}
+    if(trip&&trip.id!==id)return toast("Finish your current trip first (use End in the blue bar)",false);
+    if(!("geolocation" in navigator))return toast("This phone's browser can't share location",false);
+    if(btn){btn.disabled=true;btn.querySelector("span").textContent="Getting location…"}
+    try{const pos=await new Promise((ok,no)=>navigator.geolocation.getCurrentPosition(ok,no,{enableHighAccuracy:true,timeout:15000,maximumAge:10000}));
+      const dest=await geocode(b),k=pos.coords;
+      const{error}=await sb.rpc("start_trip",{p_booking:id,p_name:name,p_lat:k.latitude,p_lng:k.longitude,p_accuracy:Math.round(k.accuracy||0),p_dest_lat:dest?dest.lat:null,p_dest_lng:dest?dest.lng:null});
+      if(error)throw error;
+      trip={id,patient:b.patient_name,address:addrOf(b)};saveTrip();
+      lastPos={lat:k.latitude,lng:k.longitude,acc:Math.round(k.accuracy||0),heading:null,speed:null};lastSentPos=lastPos;lastSent=Date.now();
+      beginWatch();toast(`Trip started. ${b.patient_name} can now see you on the map.`);await loadTrips();window.scrollTo({top:0,behavior:"smooth"})}
+    catch(err){if(btn){btn.disabled=false;btn.querySelector("span").textContent="Start trip"}
+      toast(typeof err?.code==="number"?(err.code===1?"Location permission is blocked. Allow location for this site in your browser settings, then try again.":"Couldn't get your location. Turn on GPS and try again.")
+        :/start_trip|function|trips/i.test(err?.message||"")?"Live tracking isn't set up yet. Ask the admin to run supabase/live_tracking.sql.":(err?.message||"Couldn't start the trip"),false)}};
+  const endTrip=async silent=>{if(!trip)return;const{error}=await sb.rpc("set_trip_status",{p_booking:trip.id,p_status:"ended"});
+    if(error&&!silent)return fail(error);stopLocal(silent?"":"Trip ended. Location sharing stopped.");loadTrips()};
+  const markArrived=async()=>{if(!trip)return;const{error}=await sb.rpc("set_trip_status",{p_booking:trip.id,p_status:"arrived"});if(error)return fail(error);
+    stopWatch();trip.arrived=true;saveTrip();toast("Marked as arrived. Location sharing stopped.");loadTrips()};
+  // Pill or button shown on job cards and route stops.
+  function tripBtn(b){if(!tripsOk||!["Confirmed","Assigned"].includes(b.status))return"";const t=liveTrips[b.id];
+    if(t){const mine=trip&&trip.id===b.id;return`<span class="trip-pill ${t.status==="arrived"?"arrived":""}"><i></i>${t.status==="arrived"?"Arrived":"On the way"}${mine?" · you":t.staff_name?" · "+esc(t.staff_name):""}</span>`}
+    return`<button type="button" class="trip-start" data-trip-start="${b.id}">${SCOOTER_ICON}<span>Start trip</span></button>`}
+  const drawBar=()=>{if(!trip){bar.hidden=true;bar.innerHTML="";return}
+    const t=liveTrips[trip.id]||{},arrived=trip.arrived||t.status==="arrived",dest=t.dest_lat!=null?{lat:t.dest_lat,lng:t.dest_lng}:null,km=dest&&lastPos?geoKm(lastPos,dest):null;
+    const nav=`https://www.google.com/maps/dir/?api=1&travelmode=driving&destination=${dest?dest.lat+","+dest.lng:encodeURIComponent(trip.address||"")}`;
+    bar.hidden=false;bar.classList.toggle("arrived",arrived);
+    bar.innerHTML=arrived?`<div class="tb-main"><span class="tb-live done">ARRIVED</span><div><b>At ${esc(trip.patient)}'s address</b><small>Collect the sample, then save "Sample collected". The trip ends by itself.</small></div></div>
+      <div class="tb-acts"><button type="button" class="light sm" data-trip-end>End trip</button></div>`
+      :`<div class="tb-main"><span class="tb-live"><i></i>LIVE</span><div><b>Sharing your location with ${esc(trip.patient)}</b>
+        <small>${km!=null?`${kmText(km)} away · ~${tripEta(km)} min · `:""}${gpsNote?esc(gpsNote):lastSent?"Updated "+agoText(lastSent):"Getting GPS…"}${lastPos&&lastPos.acc>100?` · GPS ±${lastPos.acc} m`:""}</small>
+        <small class="tb-tip">Keep this page open while you travel. The screen stays on.</small></div></div>
+      <div class="tb-acts"><a class="btn light sm" href="${nav}" target="_blank" rel="noopener">${NAV_ICON}Navigate</a><button type="button" class="green sm${km!=null&&km<.15?" nudge":""}" data-trip-arrived>I've arrived</button><button type="button" class="light sm" data-trip-end>End</button></div>`};
+  document.addEventListener("click",e=>{const s=e.target.closest("[data-trip-start]");if(s){startTrip(s.dataset.tripStart,s);return}
+    if(e.target.closest("[data-trip-arrived]"))return markArrived();
+    if(e.target.closest("[data-trip-end]"))endTrip()});
+  let tripTm;sb.channel("staff-trips").on("postgres_changes",{event:"*",schema:"public",table:"trips"},()=>{clearTimeout(tripTm);tripTm=setTimeout(loadTrips,300)}).subscribe();
+  loadTrips();
+
   let reloadReports=null;initStaffReports().then(f=>reloadReports=f);
   // Job cards, report list, history and cash all refresh from the same live data.
   const reload=liveBookings(rows=>{staffRows=rows;routeRows=rows;drawRoute();$("#cntRoute").textContent=routeTodo(dayStr(0)).length;
@@ -851,4 +1203,30 @@ async function initStaffReports(){const root=$("#staffReports");if(!root)return;
   root.addEventListener("click",async e=>{const a=e.target.closest("[data-view]");if(!a)return;e.preventDefault();const{data,error}=await sb.storage.from("reports").createSignedUrl(a.dataset.view,120);if(error)return fail(error);window.open(data.signedUrl,"_blank")});
   load();return load}
 
-document.addEventListener("DOMContentLoaded",()=>{showAuthLinkError();initNav();initLogin();initStaffLogin();initAdminLogin();initTagline();initHome();initCart();initBooking();initProfile();initAccount();initReceipt();initAdmin();initStaff()});
+// Light / dark theme toggle. Choice is remembered per device (localStorage "lm_theme").
+const THEME_SVG={sun:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v2.2M12 19.8V22M4.9 4.9l1.6 1.6M17.5 17.5l1.6 1.6M2 12h2.2M19.8 12H22M4.9 19.1l1.6-1.6M17.5 6.5l1.6-1.6"/></svg>',
+  moon:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5a8.5 8.5 0 1 0 10.7 10.7Z"/></svg>'};
+const curTheme=()=>document.documentElement.dataset.theme==="dark"?"dark":"light";
+function paintThemeButtons(){const dark=curTheme()==="dark";
+  const m=document.querySelector('meta[name="theme-color"]');if(m)m.content=dark?"#0b1320":"#123b69";
+  document.querySelectorAll(".theme-btn").forEach(b=>{const label=dark?"Light mode":"Dark mode";
+    b.innerHTML=(dark?THEME_SVG.sun:THEME_SVG.moon)+(b.classList.contains("with-text")?`<span>${label}</span>`:"");
+    b.setAttribute("aria-label",dark?"Switch to light theme":"Switch to dark theme");b.title=b.getAttribute("aria-label");b.setAttribute("aria-pressed",String(dark))})}
+function setTheme(t){const h=document.documentElement;h.classList.add("theme-anim");
+  if(t==="dark")h.dataset.theme="dark";else delete h.dataset.theme;
+  try{localStorage.setItem("lm_theme",t)}catch(_){}paintThemeButtons();setTimeout(()=>h.classList.remove("theme-anim"),450)}
+function initTheme(){const make=(cls="")=>{const b=document.createElement("button");b.type="button";b.className="theme-btn "+cls;
+    b.onclick=()=>{b.classList.remove("spin");void b.offsetWidth;b.classList.add("spin");setTheme(curTheme()==="dark"?"light":"dark")};return b};
+  const nav=$(".topbar .navlinks"),side=$(".side nav"),staffOut=$(".staff-header #logout");
+  if(nav)nav.appendChild(make());
+  else if(side){const out=side.querySelector("#logout");side.insertBefore(make("with-text side-theme"),out||null)}
+  else if(staffOut){const w=document.createElement("span");w.className="hdr-actions";staffOut.replaceWith(w);w.append(make("on-dark-btn"),staffOut)}
+  else document.body.appendChild(make("floating"));
+  paintThemeButtons()}
+// "Buy me a coffee" for the developer: shown only when BMC_URL is set in assets/supabase.js.
+const BMC_CUP='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h13v5a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5V9Z"/><path d="M17 10.5h1.5a2.5 2.5 0 0 1 0 5H17"/><path d="M8 3.5c0 1 1 1.3 1 2.3M12 3.5c0 1 1 1.3 1 2.3"/></svg>';
+function initCoffee(){const url=typeof BMC_URL==="string"&&/^https:\/\/(www\.)?(buymeacoffee\.com|buymeacoff\.ee)\//.test(BMC_URL)?BMC_URL:"";if(!url)return;
+  const box=$("#bmcBox");if(box){$("#bmcBtn").href=url;$("#bmcBtn").innerHTML=BMC_CUP+"<span>Buy me a coffee</span>";box.hidden=false}
+  const foot=$(".footer .wrap");if(foot&&!foot.querySelector(".bmc-link")){const a=document.createElement("a");a.className="bmc-link";a.href=url;a.target="_blank";a.rel="noopener";
+    a.innerHTML=BMC_CUP+"Buy me a coffee";foot.append(" · ",a)}}
+document.addEventListener("DOMContentLoaded",()=>{initTheme();initCoffee();showAuthLinkError();initNav();initLogin();initStaffLogin();initAdminLogin();initTagline();initHome();initCart();initBooking();initProfile();initAccount();initReceipt();initAdmin();initStaff()});
