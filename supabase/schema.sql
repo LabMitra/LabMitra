@@ -6,7 +6,8 @@ create table profiles(id uuid primary key references auth.users on delete cascad
   age int check (age between 0 and 120), gender text check (gender in ('Male','Female','Other')),
   role text not null default 'patient' check (role in ('patient','staff','admin')), created_at timestamptz default now());
 create table tests(id serial primary key, name text not null, category text, sample text, price int not null,
-  mrp int, turnaround text, instructions text, active boolean default true);
+  mrp int, turnaround text, instructions text, active boolean default true,
+  trending boolean not null default false, code int unique, tat_minutes int);
 create table cart_items(user_id uuid not null default auth.uid() references auth.users on delete cascade,
   test_id int not null references tests on delete cascade, primary key(user_id,test_id));
 create table members(
@@ -144,7 +145,8 @@ end $$;
 create function set_status(p_id uuid,p_status text) returns void language plpgsql security definer set search_path=public as $$
 begin
   if not has_role(array['admin','staff']) then raise exception 'Not allowed'; end if;
-  if p_status not in ('Sample collected','Handed over to lab','Lab received sample','Processing started') and not has_role(array['admin']) then raise exception 'Not allowed'; end if;
+  if p_status not in ('Confirmed','Assigned','Sample collected','Handed over to lab','Lab received sample','Processing started','Report ready','Cancelled') then raise exception 'Unknown status'; end if;
+  if p_status='Cancelled' and not has_role(array['admin']) then raise exception 'Only admin can cancel a booking'; end if;
   update bookings set status=p_status where id=p_id;
   if not found then raise exception 'Booking not found'; end if;
 end $$;
@@ -290,6 +292,8 @@ insert into tests(name,category,sample,price,mrp,turnaround,instructions) values
 ('Lipid Profile','Blood Tests','Blood',399,600,'24 hours','Fast for 10-12 hours before the sample (water is fine).'),
 ('Vitamin B12','Vitamins','Blood',599,950,'48 hours',null),
 ('Urine Routine & Microscopy','Urine Tests','Urine',149,250,'Same day','Give the first urine of the morning, in the sterile container our staff bring.');
+update tests set trending=true; -- these show on the home page as Popular tests
+-- Full BYOS catalogue (598 tests): run supabase/test_catalog.sql after this file.
 
 -- Live updates between the admin and staff dashboards.
 alter publication supabase_realtime add table bookings, reports, cash_handovers;

@@ -8,6 +8,4 @@ const sb=supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY);
 // 3) Google Maps for live tracking (optional): a "Maps JavaScript API" key from Google Cloud,
 //    restricted to your website address. Leave "" to use the free OpenStreetMap map instead.
 const GOOGLE_MAPS_KEY="AIzaSyChJow1iPWxwxNUtGxWaW1wD67CtxxrEVg";
-// 4) Buy Me a Coffee: paste your page link, e.g. "https://buymeacoffee.com/yourname". Leave "" to hide the button.
-const BMC_URL="https://buymeacoffee.com/dipanshwave";
 const GOOGLE_CLIENT_ID="589560352461-4ilcsp1nolp1a54g7n3slf4fn8rpj4kt.apps.googleusercontent.com";

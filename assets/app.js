@@ -90,7 +90,7 @@ function drawMobileNav(c,count){let n=$("#mobileNav");
       item("cart.html",I.cart,"Cart",page==="cart.html"||page==="booking.html",count?`<b class="mbadge">${count}</b>`:""),
       item("account.html",I.book,"Bookings",page==="account.html"),
       item("profile.html",I.user,"Account",page==="profile.html")]
-    :[item("index.html",I.home,"Home",page==="index.html"),item("index.html#tests",I.search,"Tests",false),
+    :[item("index.html",I.home,"Home",page==="index.html"),item("tests.html",I.search,"Tests",page==="tests.html"),
       item("login.html",I.user,"Login",page==="login.html")];
   if(c&&c.profile.role==="admin")items.push(item("98991/admin/dashboard.html",I.shield,"Admin",false));
   if(c&&c.profile.role==="staff")items.push(item("staff/dashboard.html",I.shield,"Staff",false));
@@ -232,20 +232,110 @@ const addBtn=(id,inCart)=>inCart?`<button class="light addbtn added" data-add="$
 const prepLine=txt=>txt?`<div class="prep-line"><b>Before the test:</b> ${esc(txt)}</div>`:"";
 function renderTests(filter="",cat="All"){const root=$("#testGrid");if(!root)return;
   const list=TESTS.filter(t=>(t.name+" "+t.category).toLowerCase().includes(filter.toLowerCase())&&(cat==="All"||t.category===cat));
-  root.innerHTML=list.length?list.map(t=>`<article class="test"><div class="test-top"><div><h3>${esc(t.name)}</h3><small class="muted">${esc(t.category)} · ${esc(t.sample)} sample · ${esc(t.turnaround)}</small>${prepLine(t.instructions)}</div><div><div class="price">${money(t.price)}</div><div class="mrp">MRP ${money(t.mrp)}</div></div></div><div class="lab"><div><span>Report in ${esc(t.turnaround)} · Home collection</span></div>${addBtn(t.id,CART_IDS.has(t.id))}</div></article>`).join(""):`<div class="empty" style="grid-column:1/-1">No tests match your search. Try another test name.</div>`}
-async function initHome(){if(!$("#testGrid"))return;const{data,error}=await sb.from("tests").select("*").eq("active",true).order("id");if(error)return fail(error);TESTS=data;
+  root.innerHTML=list.length?list.map(t=>`<article class="test"><div class="test-top"><div><h3>${esc(t.name)}</h3><small class="muted">${esc(t.category)} · ${esc(t.sample)} sample · ${esc(t.turnaround)}</small>${prepLine(t.instructions)}</div><div><div class="price">${money(t.price)}</div>${t.mrp>t.price?`<div class="mrp">MRP ${money(t.mrp)}</div>`:""}</div></div><div class="lab"><div><span>Report in ${esc(t.turnaround)} · Home collection</span></div>${addBtn(t.id,CART_IDS.has(t.id))}</div></article>`).join(""):`<div class="empty" style="grid-column:1/-1">Not in our popular tests. <a href="tests.html?q=${encodeURIComponent(filter)}"><b>Search all tests for “${esc(filter)}” →</b></a></div>`}
+async function initHome(){if(!$("#testGrid"))return;let{data,error}=await sb.from("tests").select("*").eq("active",true).eq("trending",true).order("id");
+  if(error&&/trending/.test(error.message))({data,error}=await sb.from("tests").select("*").eq("active",true).order("id"));if(error)return fail(error);TESTS=data;
+  sb.from("tests").select("id",{count:"exact",head:true}).eq("active",true).then(({count})=>{if(count>TESTS.length)document.querySelectorAll("[data-total-tests]").forEach(el=>el.textContent=count)});
   const c=await me();if(c){const{data:ci}=await sb.from("cart_items").select("test_id");CART_IDS=new Set((ci||[]).map(x=>x.test_id))}
   renderTests();
   const cur=()=>$(".chip.active")?.dataset.cat||"All";
   $("#searchInput").addEventListener("input",e=>renderTests(e.target.value,cur()));
   document.querySelectorAll(".chip").forEach(c=>c.addEventListener("click",()=>{document.querySelectorAll(".chip").forEach(x=>x.classList.remove("active"));c.classList.add("active");renderTests($("#searchInput").value,c.dataset.cat)}));
-  $("#testGrid").addEventListener("click",async e=>{const b=e.target.closest("[data-add]");if(!b||b.classList.contains("added"))return;
-    const c=await me();if(!c){location.href="login.html?next=index.html";return}
-    const id=+b.dataset.add;b.disabled=true;b.classList.add("pop");
-    const{error}=await sb.from("cart_items").upsert({user_id:c.user.id,test_id:id},{onConflict:"user_id,test_id",ignoreDuplicates:true});
-    if(error){b.disabled=false;b.classList.remove("pop");return fail(error)}
-    CART_IDS.add(id);b.classList.add("added");b.innerHTML=`${CHECK_ICON}<span>In cart</span>`;
-    toast("Added to cart");initNav()})}
+  bindAddToCart($("#testGrid"),"index.html")}
+// Add-to-cart buttons ([data-add]) inside any container. Used by the home page and the All tests page.
+function bindAddToCart(box,next,onAdd){box.addEventListener("click",async e=>{const b=e.target.closest("[data-add]");if(!b||b.classList.contains("added"))return;
+  const c=await me();if(!c){location.href="login.html?next="+encodeURIComponent(next);return}
+  const id=+b.dataset.add;b.disabled=true;b.classList.add("pop");
+  const{error}=await sb.from("cart_items").upsert({user_id:c.user.id,test_id:id},{onConflict:"user_id,test_id",ignoreDuplicates:true});
+  if(error){b.disabled=false;b.classList.remove("pop");return fail(error)}
+  CART_IDS.add(id);b.classList.add("added");b.innerHTML=`${CHECK_ICON}<span>In cart</span>`;
+  toast("Added to cart");initNav();onAdd&&onAdd()})}
+
+// ---------- All tests catalogue (tests.html) ----------
+const CAT_ICO={drop:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.7s6 6.4 6 11.1a6 6 0 0 1-12 0C6 9.1 12 2.7 12 2.7z"/></svg>',
+  clock:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+  filter:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M7 12h10M10 18h4"/></svg>',
+  star:'<svg viewBox="0 0 24 24" fill="currentColor"><path d="m12 2.5 2.9 6 6.6.9-4.8 4.6 1.2 6.5L12 17.4l-5.9 3.1 1.2-6.5L2.5 9.4l6.6-.9z"/></svg>',
+  x:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>'};
+const CAT_PRICES=[["any","Any price"],["0-500","Under ₹500"],["500-1000","₹500 – ₹1,000"],["1000-3000","₹1,000 – ₹3,000"],["3000-","Above ₹3,000"]];
+const CAT_TATS=[["any","Any time"],["day","Same day"],["24","Within 24 hours"],["48","Within 2 days"],["long","More than 2 days"]];
+const CAT_SORTS=[["popular","Popular first"],["az","Name: A to Z"],["low","Price: low to high"],["high","Price: high to low"],["fast","Fastest report"]];
+const catNorm=s=>String(s||"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim();
+const CAT_SYN={sugar:"glucose",diabetes:"diabetes glucose hba1c",kft:"kidney",rft:"kidney",lft:"liver",vit:"vitamin",typhoid:"typhi widal",tb:"tuberculosis afb",pregnancy:"pregnancy hcg",cholesterol:"cholesterol lipid",thyroid:"thyroid tsh",cbc:"complete blood count"};
+async function initCatalog(){const list=$("#catList");if(!list)return;
+  const P=new URLSearchParams(location.search);
+  const st={q:P.get("q")||"",cat:P.get("cat")||"",samples:new Set(),price:"any",tat:"any",letter:"",sort:"popular",shown:30};
+  list.innerHTML='<div class="cat-skel"></div>'.repeat(6);
+  const{data,error}=await sb.from("tests").select("*").eq("active",true).order("name");if(error){list.innerHTML="";return fail(error)}
+  const all=data.map(t=>{const n=catNorm(`${t.name} ${t.category} ${t.sample}`);return{...t,hay:n+" "+n.replace(/ /g,""),first:/^[a-z]/i.test(t.name.trim())?t.name.trim()[0].toUpperCase():"#",tat:t.tat_minutes??tatGuess(t.turnaround)}});
+  TESTS=all;const c=await me();if(c){const{data:ci}=await sb.from("cart_items").select("test_id");CART_IDS=new Set((ci||[]).map(x=>x.test_id))}
+  $("#catSearch").placeholder=`Search ${all.length} tests by name, organ or condition…`;$("#catSearch").value=st.q;
+  $("#catTotal").textContent=all.length;
+  function tatGuess(s){s=String(s||"").toLowerCase();const n=parseFloat(s)||1;return/same/.test(s)?360:/hour/.test(s)?n*60:/day/.test(s)?n*1440:1440}
+  const words=q=>catNorm(q).split(" ").filter(Boolean).map(w=>CAT_SYN[w]?CAT_SYN[w].split(" "):[w]);
+  const matchQ=(t,ws)=>ws.every(alts=>alts.some(w=>t.hay.includes(w)));
+  const inPrice=t=>{if(st.price==="any")return true;const[a,b]=st.price.split("-");return t.price>=+a&&(!b||t.price<+b)};
+  const inTat=t=>({any:1,day:t.tat<=480,"24":t.tat<=1440,"48":t.tat<=2880,long:t.tat>2880})[st.tat];
+  // filter with everything except one dimension (for live counts next to each option)
+  let W=[];const pass=(t,skip)=>{return(skip==="q"||matchQ(t,W))&&(skip==="cat"||!st.cat||t.category===st.cat)&&(skip==="sample"||!st.samples.size||st.samples.has(t.sample))&&(skip==="price"||inPrice(t))&&(skip==="tat"||inTat(t))&&(skip==="letter"||!st.letter||t.first===st.letter)};
+  const sorters={popular:(a,b)=>(b.trending-a.trending)||a.name.localeCompare(b.name),az:(a,b)=>a.name.localeCompare(b.name),low:(a,b)=>a.price-b.price||a.name.localeCompare(b.name),high:(a,b)=>b.price-a.price||a.name.localeCompare(b.name),fast:(a,b)=>a.tat-b.tat||a.name.localeCompare(b.name)};
+  const counts=(skip,key)=>{const m={};all.forEach(t=>{if(pass(t,skip)){const k=key(t);m[k]=(m[k]||0)+1}});return m};
+  const cats=[...new Set(all.map(t=>t.category))].sort((a,b)=>a==="Other tests"?1:b==="Other tests"?-1:a.localeCompare(b));
+  const samples=Object.entries(all.reduce((m,t)=>(m[t.sample]=(m[t.sample]||0)+1,m),{})).sort((a,b)=>b[1]-a[1]).map(([s])=>s);
+  const QUICK=["Thyroid","Diabetes","Fever (Dengue, Malaria, Typhoid)","Vitamins & Minerals","Heart & Cholesterol","Liver & Pancreas","Kidney","Hormones","Pregnancy & Fertility","Allergy"].filter(c=>cats.includes(c));
+  const short=c=>c.replace(/ \(.*\)/,"");
+  function drawSide(){const cc=counts("cat",t=>t.category),sc=counts("sample",t=>t.sample),total=all.filter(t=>pass(t,"cat")).length;
+    const pc=k=>all.filter(t=>pass(t,"price")&&(k==="any"||(()=>{const[a,b]=k.split("-");return t.price>=+a&&(!b||t.price<+b)})())).length;
+    const tc=k=>all.filter(t=>pass(t,"tat")&&({any:1,day:t.tat<=480,"24":t.tat<=1440,"48":t.tat<=2880,long:t.tat>2880})[k]).length;
+    $("#catSideBody").innerHTML=`<div class="cs-group"><h4>Category</h4><div class="cs-cats">
+        <button type="button" class="cs-opt${!st.cat?" on":""}" data-cat=""><span>All categories</span><small>${total}</small></button>
+        ${cats.map(c=>`<button type="button" class="cs-opt${st.cat===c?" on":""}" data-cat="${esc(c)}"${!cc[c]?" disabled":""}><span>${esc(c)}</span><small>${cc[c]||0}</small></button>`).join("")}</div></div>
+      <div class="cs-group"><h4>Sample type</h4>${samples.map((s,i)=>`<label class="cs-check${i>5?" cs-extra":""}"${i>5&&!st.moreS?" hidden":""}><input type="checkbox" data-sample="${esc(s)}"${st.samples.has(s)?" checked":""}><span>${esc(s)}</span><small>${sc[s]||0}</small></label>`).join("")}
+        ${samples.length>6?`<button type="button" class="cs-link" data-more-s>${st.moreS?"Show fewer":`Show all ${samples.length}`}</button>`:""}</div>
+      <div class="cs-group"><h4>Price</h4>${CAT_PRICES.map(([k,l])=>`<label class="cs-check"><input type="radio" name="csPrice" data-price="${k}"${st.price===k?" checked":""}><span>${l}</span><small>${pc(k)}</small></label>`).join("")}</div>
+      <div class="cs-group"><h4>Report time</h4>${CAT_TATS.map(([k,l])=>`<label class="cs-check"><input type="radio" name="csTat" data-tat="${k}"${st.tat===k?" checked":""}><span>${l}</span><small>${tc(k)}</small></label>`).join("")}</div>`}
+  function drawAZ(){const lc=counts("letter",t=>t.first);
+    $("#catAZ").innerHTML=`<button type="button" data-letter=""${!st.letter?' class="on"':""}>All</button>`+["#",..."ABCDEFGHIJKLMNOPQRSTUVWXYZ"].map(l=>`<button type="button" data-letter="${l}"${st.letter===l?' class="on"':""}${!lc[l]?" disabled":""}>${l}</button>`).join("")}
+  function drawActive(){const chips=[];if(st.q)chips.push(["q",`“${st.q}”`]);if(st.cat)chips.push(["cat",short(st.cat)]);st.samples.forEach(s=>chips.push(["s:"+s,s+" sample"]));
+    if(st.price!=="any")chips.push(["price",CAT_PRICES.find(p=>p[0]===st.price)[1]]);if(st.tat!=="any")chips.push(["tat",CAT_TATS.find(p=>p[0]===st.tat)[1]]);if(st.letter)chips.push(["letter","Starts with "+st.letter]);
+    $("#catActive").innerHTML=chips.length?chips.map(([k,l])=>`<button type="button" class="cat-chip" data-clear="${esc(k)}">${esc(l)}${CAT_ICO.x}</button>`).join("")+`<button type="button" class="cs-link" data-clear="all">Clear all</button>`:"";
+    const n=chips.length-(st.q?1:0);$("#catFilterBtn").innerHTML=`${CAT_ICO.filter}Filters${n?` <b>${n}</b>`:""}`;
+    document.querySelectorAll("[data-quick]").forEach(b=>b.classList.toggle("on",b.dataset.quick===st.cat))}
+  const row=t=>`<article class="cat-row"><div class="cat-main"><h3>${esc(t.name)}${t.trending?`<span class="cat-pop">${CAT_ICO.star}Popular</span>`:""}</h3>
+      <div class="cat-meta"><button type="button" class="cat-tag" data-cat="${esc(t.category)}">${esc(t.category)}</button><span>${CAT_ICO.drop}${esc(t.sample)} sample</span><span>${CAT_ICO.clock}Report: ${esc(t.turnaround)}</span></div>${prepLine(t.instructions)}</div>
+    <div class="cat-buy"><div class="cat-price"><b>${money(t.price)}</b>${t.mrp>t.price?`<s>${money(t.mrp)}</s><em>${Math.round((1-t.price/t.mrp)*100)}% off</em>`:""}</div>${addBtn(t.id,CART_IDS.has(t.id))}</div></article>`;
+  function draw(keepShown){if(!keepShown)st.shown=30;W=words(st.q);const res=all.filter(t=>pass(t)).sort(sorters[st.sort]);
+    $("#catCount").innerHTML=`<b>${res.length}</b> ${res.length===1?"test":"tests"}${st.cat?` in ${esc(short(st.cat))}`:""}`;
+    list.innerHTML=res.length?res.slice(0,st.shown).map(row).join(""):`<div class="cat-empty"><b>No tests match${st.q?` “${esc(st.q)}”`:" these filters"}.</b><span>Try a different spelling or fewer filters. Can't find your test? Call us and we'll check if the lab can do it.</span>
+      <div class="cat-empty-acts"><button type="button" class="light" data-clear="all">Clear filters</button>${typeof BUSINESS!=="undefined"&&BUSINESS.phone?`<a class="btn green" href="tel:${BUSINESS.phone.replace(/\s/g,"")}">Call the lab</a>`:""}</div></div>`;
+    const more=$("#catMore");more.hidden=res.length<=st.shown;more.textContent=`Show more tests (${Math.min(st.shown,res.length)} of ${res.length})`;
+    drawSide();drawAZ();drawActive();
+    const u=new URL(location.href);u.searchParams.delete("q");u.searchParams.delete("cat");if(st.q)u.searchParams.set("q",st.q);if(st.cat)u.searchParams.set("cat",st.cat);history.replaceState(null,"",u)}
+  function drawCartBar(){const n=CART_IDS.size,bar=$("#catCartBar");bar.hidden=!n;bar.querySelector("span").textContent=`${n} ${n===1?"test":"tests"} in your cart`}
+  // quick category chips in the hero
+  $("#catQuick").innerHTML=QUICK.map(c=>`<button type="button" data-quick="${esc(c)}">${esc(short(c))}</button>`).join("");
+  $("#catSort").innerHTML=CAT_SORTS.map(([k,l])=>`<option value="${k}">${l}</option>`).join("");
+  // events
+  let tm;$("#catSearch").addEventListener("input",e=>{clearTimeout(tm);tm=setTimeout(()=>{st.q=e.target.value.trim();draw()},140)});
+  $("#catSearchForm").addEventListener("submit",e=>{e.preventDefault();st.q=$("#catSearch").value.trim();draw();$("#catResults").scrollIntoView({behavior:"smooth",block:"start"})});
+  $("#catSort").addEventListener("change",e=>{st.sort=e.target.value;draw()});
+  $("#catMore").addEventListener("click",()=>{st.shown+=30;draw(true)});
+  const setCat=c=>{st.cat=st.cat===c&&c?"":c;draw()};
+  document.addEventListener("click",e=>{const t=e.target.closest("[data-cat],[data-quick],[data-letter],[data-clear],[data-more-s],[data-close-filters],#catFilterBtn");if(!t||t.disabled)return;
+    if(t.id==="catFilterBtn"){document.body.classList.add("cat-filters-open");return}
+    if(t.hasAttribute("data-close-filters")){document.body.classList.remove("cat-filters-open");return}
+    if(t.hasAttribute("data-more-s")){st.moreS=!st.moreS;drawSide();return}
+    if(t.dataset.quick!==undefined){setCat(t.dataset.quick);$("#catResults").scrollIntoView({behavior:"smooth",block:"start"});return}
+    if(t.dataset.cat!==undefined){st.cat=t.dataset.cat;draw();if(t.classList.contains("cat-tag"))$("#catResults").scrollIntoView({behavior:"smooth",block:"start"});return}
+    if(t.dataset.letter!==undefined){st.letter=t.dataset.letter;draw();return}
+    const k=t.dataset.clear;if(k==="all"){Object.assign(st,{q:"",cat:"",price:"any",tat:"any",letter:""});st.samples.clear();$("#catSearch").value=""}
+    else if(k==="q"){st.q="";$("#catSearch").value=""}else if(k==="cat")st.cat="";else if(k==="price")st.price="any";else if(k==="tat")st.tat="any";else if(k==="letter")st.letter="";else if(k.startsWith("s:"))st.samples.delete(k.slice(2));draw()});
+  $("#catSideBody").addEventListener("change",e=>{const i=e.target;if(i.dataset.sample!==undefined)i.checked?st.samples.add(i.dataset.sample):st.samples.delete(i.dataset.sample);
+    else if(i.dataset.price)st.price=i.dataset.price;else if(i.dataset.tat)st.tat=i.dataset.tat;draw()});
+  document.addEventListener("keydown",e=>{if(e.key==="Escape")document.body.classList.remove("cat-filters-open");
+    if(e.key==="/"&&!/input|textarea|select/i.test(document.activeElement.tagName)){e.preventDefault();$("#catSearch").focus()}});
+  bindAddToCart(list,"tests.html"+location.search,drawCartBar);
+  draw();drawCartBar()}
 const getCart=async()=>{const{data,error}=await sb.from("cart_items").select("test_id,tests(*)");if(error)throw error;return data.map(r=>r.tests)};
 async function initCart(){const root=$("#cartItems");if(!root||!await guard())return;
   const draw=async()=>{const items=await getCart();const total=items.reduce((s,t)=>s+t.price,0),mrp=items.reduce((s,t)=>s+t.mrp,0);
@@ -856,6 +946,234 @@ function adminAnalytics(){if(!$("#kpiTiles"))return{setRows(){}};
   ov.addEventListener("click",e=>{const el=e.target.closest("[data-tip]");if(el){const r=el.getBoundingClientRect();show(el,r.left+r.width/2,r.top)}else tip.hidden=true});
   draw();
   return{setRows(r){rows=r;draw()}}}
+// Admin: File manager, Windows Explorer style. Folders: Reports > Year > Month > Booking (patient) > PDF files.
+const PDF_ICON='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 15h6M9 18h4"/></svg>';
+const FX_ICO={
+  folder:full=>`<svg viewBox="0 0 48 40" aria-hidden="true"><path d="M3 7a4 4 0 0 1 4-4h11.5l4.5 4.5h18a4 4 0 0 1 4 4V14H3z" fill="#dfa424"/>${full?'<rect x="7" y="8" width="34" height="14" rx="1.5" fill="#fff" stroke="#e7d7ae"/>':""}<path d="M3 13h42v20a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4z" fill="#f8c74c"/><path d="M3 13h42v3H3z" fill="#fbd877"/></svg>`,
+  pdf:'<svg viewBox="0 0 40 48" aria-hidden="true"><path d="M6 2h21l11 11v31a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z" fill="#fff" stroke="#c3cdd8" stroke-width="1.5"/><path d="M27 2v9a2 2 0 0 0 2 2h9" fill="#edf1f5" stroke="#c3cdd8" stroke-width="1.5" stroke-linejoin="round"/><path d="M11 20h17M11 24h12" stroke="#d6dde5" stroke-width="2" stroke-linecap="round"/><rect x="1" y="28" width="27" height="12" rx="2" fill="#d93025"/><text x="14.5" y="37.2" text-anchor="middle" font-size="9" font-weight="800" fill="#fff" font-family="Arial,sans-serif">PDF</text></svg>',
+  drive:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="13" width="20" height="8" rx="2"/><path d="M5.5 13 8 4h8l2.5 9"/><path d="M17 17h.01"/></svg>',
+  clock:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+  wait:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2h12M6 22h12M7 2v4l5 6-5 6v4M17 2v4l-5 6 5 6v4"/></svg>',
+  back:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>',
+  fwd:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>',
+  up:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg>',
+  upload:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M20 16v3a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-3"/></svg>',
+  open:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>',
+  dl:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12M7 11l5 5 5-5"/><path d="M4 20h16"/></svg>',
+  replace:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 0 0-14.3-4.9L4 8"/><path d="M4 3v5h5"/><path d="M4 13a8 8 0 0 0 14.3 4.9L20 16"/><path d="M20 21v-5h-5"/></svg>',
+  del:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6"/><path d="M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13M9 7V4h6v3"/></svg>',
+  details:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>',
+  tiles:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>',
+  pane:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>',
+  menu:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>',
+  search:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>',
+  chev:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg>'};
+const FX_MONTHS=["January","February","March","April","May","June","July","August","September","October","November","December"];
+function adminFiles(){const root=$("#fx");if(!root)return{setRows(){}};
+  const pref=(k,d)=>{try{return localStorage.getItem(k)||d}catch{return d}},save=(k,v)=>{try{localStorage.setItem(k,v)}catch{}};
+  let rows=[],loc={k:"root"},hist=[],fwd=[],sel=new Set(),anchor=null,q="",busy="",
+    mode=pref("lm_fx_view","details"),pane=pref("lm_fx_pane","1")==="1",sort={c:"date",d:-1},
+    expanded=new Set([String(new Date().getFullYear())]),items=[],sizes={},sized={},urls={};
+  const list=$("#fxList"),menu=document.createElement("div");menu.className="fx-menu";menu.hidden=true;document.body.appendChild(menu);
+  // ---------- data ----------
+  const okPdf=f=>f&&(f.type==="application/pdf"||/\.pdf$/i.test(f.name))&&f.size<=10*1048576;
+  const ymOf=b=>String(b.collect_date||b.created_at||"").slice(0,7);
+  const shown=()=>rows.filter(b=>b.status!=="Cancelled"||(b.reports||[]).length);
+  const reps=b=>(b.reports||[]).slice().sort((x,y)=>new Date(x.created_at||0)-new Date(y.created_at||0));
+  const fileName=(b,i,n)=>`${b.ref}-report${n>1?"-"+(i+1):""}.pdf`;
+  const fileItems=b=>reps(b).map((r,i,a)=>({t:"file",id:"f:"+r.id,r,b,name:fileName(b,i,a.length),date:r.created_at}));
+  const bkItem=b=>({t:"bk",id:"b:"+b.id,b,name:`${b.ref} – ${b.patient_name}`,date:b.collect_date,n:(b.reports||[]).length});
+  const byId=id=>rows.find(b=>b.id===id);
+  const years=()=>{const m={};shown().forEach(b=>{const y=ymOf(b).slice(0,4);if(y)(m[y]=m[y]||[]).push(b)});return m};
+  const months=y=>{const m={};shown().forEach(b=>{const ym=ymOf(b);if(ym.slice(0,4)===y)(m[ym]=m[ym]||[]).push(b)});return m};
+  const latest=bs=>bs.map(b=>b.collect_date||"").sort().pop();
+  const waiting=()=>rows.filter(b=>b.status!=="Cancelled"&&!(b.reports||[]).length);
+  const allFiles=()=>rows.flatMap(fileItems);
+  function itemsFor(l){
+    if(q){const s=q.toLowerCase(),hit=b=>`${b.ref} ${b.patient_name} ${b.phone||""} ${b.sample_id||""}`.toLowerCase().includes(s);
+      return[...shown().filter(hit).map(bkItem),...allFiles().filter(f=>hit(f.b)||f.name.toLowerCase().includes(s))]}
+    if(l.k==="root")return Object.entries(years()).map(([y,bs])=>({t:"dir",id:"y:"+y,name:y,go:{k:"year",y},date:latest(bs),n:bs.length,sk:y}));
+    if(l.k==="year")return Object.entries(months(l.y)).map(([ym,bs])=>({t:"dir",id:"m:"+ym,name:FX_MONTHS[+ym.slice(5)-1],go:{k:"month",ym},date:latest(bs),n:bs.length,sk:ym}));
+    if(l.k==="month")return shown().filter(b=>ymOf(b)===l.ym).map(bkItem);
+    if(l.k==="bk"){const b=byId(l.id);return b?fileItems(b):[]}
+    if(l.k==="recent")return allFiles().sort((x,y)=>new Date(y.date||0)-new Date(x.date||0)).slice(0,60);
+    if(l.k==="waiting")return waiting().map(bkItem);return[]}
+  const sorted=arr=>{const{c,d}=sort,isDir=i=>i.t!=="file",key=i=>c==="name"?(i.sk||i.name).toLowerCase():c==="type"?(isDir(i)?"0":"1"):c==="size"?(i.t==="file"?sizes[i.r.path]||0:i.n||0):String(i.date||"");
+    return arr.slice().sort((a,b)=>(isDir(b)-isDir(a))||(key(a)<key(b)?-d:key(a)>key(b)?d:0))};
+  const parent=l=>l.k==="bk"?(()=>{const b=byId(l.id);return b?{k:"month",ym:ymOf(b)}:{k:"root"}})():l.k==="month"?{k:"year",y:l.ym.slice(0,4)}:{k:"root"};
+  const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+  const ctxBooking=()=>{if(loc.k==="bk"&&!q)return byId(loc.id);const s=selItems();return s.length===1&&s[0].t==="bk"?s[0].b:s.length&&s.every(i=>i.t==="file"&&i.b===s[0].b)?s[0].b:null};
+  const selItems=()=>items.filter(i=>sel.has(i.id));
+  // ---------- storage ----------
+  const signed=async(path,dl)=>{const{data,error}=await sb.storage.from("reports").createSignedUrl(path,300,dl?{download:dl}:undefined);if(error){fail(error);return null}return data.signedUrl};
+  const uploadTo=async(b,file)=>{const path=`${b.id}/${Date.now()}-${Math.random().toString(36).slice(2,6)}.pdf`;
+    let r=await sb.storage.from("reports").upload(path,file,{contentType:"application/pdf"});if(r.error)throw r.error;
+    r=await sb.rpc("staff_upload_report",{p_booking_id:b.id,p_path:path});if(r.error){await sb.storage.from("reports").remove([path]);throw r.error}sizes[path]=file.size;return path};
+  const removeRep=async rep=>{const r1=await sb.storage.from("reports").remove([rep.path]);if(r1.error)throw r1.error;
+    const r2=await sb.from("reports").delete().eq("id",rep.id);if(r2.error)throw r2.error};
+  const loadSizes=async b=>{const key=(b.reports||[]).map(r=>r.id).join();if(!key||sized[b.id]===key)return;sized[b.id]=key;
+    const{data}=await sb.storage.from("reports").list(b.id,{limit:100});(data||[]).forEach(o=>{if(o.metadata?.size!=null)sizes[`${b.id}/${o.name}`]=o.metadata.size});draw()};
+  const kb=n=>n==null?"":n<1048576?Math.max(1,Math.round(n/1024))+" KB":(n/1048576).toFixed(1)+" MB";
+  // ---------- file picking / uploading ----------
+  const hidden=document.createElement("input");hidden.type="file";hidden.accept="application/pdf";hidden.hidden=true;document.body.appendChild(hidden);
+  const pickFiles=multi=>new Promise(ok=>{hidden.multiple=multi;hidden.value="";hidden.onchange=()=>ok([...hidden.files]);hidden.click()});
+  async function uploadMany(b,files){const good=files.filter(okPdf),bad=files.length-good.length;
+    if(bad)toast(`${bad} file${bad>1?"s":""} skipped: only PDFs up to 10 MB`,false);if(!good.length)return;let done=0;
+    try{for(const f of good){busy=`Uploading ${done+1} of ${good.length} to ${b.ref}…`;drawStatus();await uploadTo(b,f);done++}
+      toast(`${done} PDF${done>1?"s":""} uploaded for ${b.patient_name}. The patient can download ${done>1?"them":"it"} now.`);
+      if(!(loc.k==="bk"&&loc.id===b.id))go({k:"bk",id:b.id})}
+    catch(err){fail(err)}finally{busy="";drawStatus()}}
+  function choosePatient(files){
+    const body=openModal("Upload to which patient?",`<p class="muted" style="margin-top:0">Reports live inside each patient's booking folder. Pick the booking first${files?`, then your ${files.length} file${files.length>1?"s":""} upload straight away`:""}.</p>
+      <input id="fxPickQ" placeholder="Patient name, booking ref, phone or sample ID…" autocomplete="off"><div class="fx-picks" id="fxPicks"></div>`);
+    const inp=body.querySelector("#fxPickQ"),out=body.querySelector("#fxPicks");
+    const paint=()=>{const s=inp.value.trim().toLowerCase();
+      const hits=(s?rows.filter(b=>b.status!=="Cancelled"&&`${b.ref} ${b.patient_name} ${b.phone||""} ${b.sample_id||""}`.toLowerCase().includes(s)):waiting()).slice(0,8);
+      out.innerHTML=(s?"":`<small class="muted fx-picks-h">Waiting for a report</small>`)+(hits.length?hits.map(b=>`<button type="button" class="fx-pick" data-pick="${b.id}"><span class="fx-ico sm">${FX_ICO.folder((b.reports||[]).length)}</span><span><b>${esc(b.ref)} – ${esc(b.patient_name)}</b><small class="muted">${b.collect_date?fmt(b.collect_date):""} · ${esc(b.status)} · ${(b.reports||[]).length} PDF${(b.reports||[]).length===1?"":"s"}</small></span></button>`).join(""):'<p class="muted" style="font-size:13px">No booking found.</p>')};
+    inp.addEventListener("input",paint);paint();setTimeout(()=>inp.focus(),30);
+    out.addEventListener("click",async e=>{const h=e.target.closest("[data-pick]");if(!h)return;const b=byId(h.dataset.pick);
+      if(files){closeModal();uploadMany(b,files)}else{const p=pickFiles(true);closeModal();const f=await p;if(f.length)uploadMany(b,f)}})}
+  async function doUpload(){const b=ctxBooking();if(!b)return choosePatient(null);const f=await pickFiles(true);if(f.length)uploadMany(b,f)}
+  // ---------- actions ----------
+  function openItem(i){if(!i)return;if(i.t==="dir")go(i.go);else if(i.t==="bk")go({k:"bk",id:i.b.id});else viewFile(i)}
+  async function viewFile(i){const w=window.open("","_blank");const u=await signed(i.r.path);if(u&&w)w.location=u;else if(w)w.close()}
+  async function download(arr){for(const i of arr){const u=await signed(i.r.path,i.name);if(!u)return;const a=document.createElement("a");a.href=u;a.download=i.name;document.body.appendChild(a);a.click();a.remove();await new Promise(r=>setTimeout(r,350))}}
+  async function replace(i){const[f]=await pickFiles(false);if(!f)return;if(!okPdf(f))return toast("Choose a PDF up to 10 MB",false);
+    busy=`Replacing ${i.name}…`;drawStatus();try{await uploadTo(i.b,f);await removeRep(i.r);delete urls[i.r.path];toast(`${i.name} replaced. The patient now sees the new file.`)}catch(err){fail(err)}finally{busy="";drawStatus()}}
+  function del(arr){if(!arr.length)return;const byBk=new Map();arr.forEach(i=>byBk.set(i.b,[...(byBk.get(i.b)||[]),i]));
+    const back=[...byBk].filter(([b,fs])=>b.status==="Report ready"&&fs.length>=(b.reports||[]).length).map(([b])=>b);
+    const body=openModal(arr.length>1?`Delete ${arr.length} PDFs?`:"Delete this PDF?",`<p>${arr.length>1?`These <b>${arr.length} files</b> will`:`<b>${esc(arr[0].name)}</b> for <b>${esc(arr[0].b.patient_name)}</b> will`} be deleted permanently. Patients won't be able to download ${arr.length>1?"them":"it"} any more.</p>
+      ${back.length?`<div class="notice">${back.length>1?`${back.length} bookings`:esc(back[0].ref)} will have no report left, so the status goes back to <b>Processing started</b>.</div>`:""}
+      <div class="modal-actions"><button type="button" class="light" data-close>Keep</button><button type="button" class="danger" id="fxDelOk">Delete</button></div>`);
+    body.querySelector("#fxDelOk").onclick=async ev=>{ev.target.disabled=true;ev.target.textContent="Deleting…";
+      try{for(const i of arr)await removeRep(i.r);for(const b of back)await sb.from("bookings").update({status:"Processing started"}).eq("id",b.id);
+        closeModal();sel.clear();toast(arr.length>1?`${arr.length} PDFs deleted`:"PDF deleted")}catch(err){ev.target.disabled=false;ev.target.textContent="Delete";fail(err)}}}
+  function act(a){const s=selItems(),files=s.filter(i=>i.t==="file");
+    ({back:()=>{if(hist.length){fwd.push(loc);go(hist.pop(),false)}},fwd:()=>{if(fwd.length){hist.push(loc);go(fwd.pop(),false)}},
+      up:()=>{if(q){clearQ();return}if(loc.k!=="root")go(parent(loc))},upload:doUpload,open:()=>openItem(s[0]),
+      download:()=>download(files),replace:()=>files.length===1&&replace(files[0]),delete:()=>del(files),
+      details:()=>{mode="details";save("lm_fx_view",mode);draw()},tiles:()=>{mode="tiles";save("lm_fx_view",mode);draw()},
+      pane:()=>{pane=!pane;save("lm_fx_pane",pane?"1":"0");draw()},nav:()=>root.classList.toggle("nav-open"),
+      selall:()=>{items.forEach(i=>sel.add(i.id));paintSel()}})[a]?.()}
+  // ---------- navigation ----------
+  function go(l,push=true){if(push&&!same(l,loc)){hist.push(loc);fwd=[]}loc=l;q="";$("#fxSearch").value="";sel.clear();anchor=null;
+    if(l.k==="year")expanded.add(l.y);if(l.k==="month"||l.k==="bk"){const ym=l.k==="month"?l.ym:ymOf(byId(l.id)||{});expanded.add(ym.slice(0,4))}
+    root.classList.remove("nav-open");draw();list.scrollTop=0}
+  const clearQ=()=>{q="";$("#fxSearch").value="";sel.clear();draw()};
+  const crumbs=()=>{if(q)return[{n:"Reports",l:{k:"root"}},{n:`Search results for “${q}”`}];
+    const c=[{n:"Reports",l:{k:"root"}}];
+    if(loc.k==="recent")return[{n:"Quick access"},{n:"Recent uploads"}];if(loc.k==="waiting")return[{n:"Quick access"},{n:"Waiting for report"}];
+    let ym=loc.k==="month"?loc.ym:loc.k==="bk"?ymOf(byId(loc.id)||{}):"",y=loc.k==="year"?loc.y:ym.slice(0,4);
+    if(y)c.push({n:y,l:{k:"year",y}});if(ym)c.push({n:FX_MONTHS[+ym.slice(5)-1],l:{k:"month",ym}});
+    if(loc.k==="bk"){const b=byId(loc.id);if(b)c.push({n:`${b.ref} – ${b.patient_name}`,l:loc})}return c};
+  // ---------- drawing ----------
+  const icon=(i,big)=>`<span class="fx-ico${big?" big":""}">${i.t==="file"?FX_ICO.pdf:FX_ICO.folder(i.n>0)}</span>`;
+  const typeOf=i=>i.t==="file"?"PDF Document":i.t==="bk"?"Patient folder":"File folder";
+  const sizeOf=i=>i.t==="file"?kb(sizes[i.r.path]):i.t==="bk"?(i.n?`${i.n} file${i.n>1?"s":""}`:"Empty"):`${i.n} booking${i.n>1?"s":""}`;
+  const infoOf=i=>i.t==="bk"?`<span class="pill ${statusMeta(i.b.status).cls}">${esc(i.b.status)}</span>`:i.t==="file"?esc(i.b.patient_name):"";
+  const dateOf=i=>!i.date?"—":i.t==="file"?fmtDT(i.date):fmt(i.date);
+  function drawTree(){const ys=years(),cur=l=>!q&&same(l,loc)?" on":"",wn=waiting().length;
+    $("#fxNav").innerHTML=`<div class="fx-nav-h">Quick access</div>
+      <button type="button" class="fx-node${cur({k:"recent"})}" data-go='{"k":"recent"}'><span class="fx-nico">${FX_ICO.clock}</span>Recent uploads</button>
+      <button type="button" class="fx-node${cur({k:"waiting"})}" data-go='{"k":"waiting"}'><span class="fx-nico wait">${FX_ICO.wait}</span>Waiting for report${wn?`<span class="fx-badge">${wn}</span>`:""}</button>
+      <div class="fx-nav-h">This lab</div>
+      <button type="button" class="fx-node${cur({k:"root"})}" data-go='{"k":"root"}'><span class="fx-nico drive">${FX_ICO.drive}</span>Reports</button>
+      ${Object.keys(ys).sort().reverse().map(y=>{const op=expanded.has(y);
+        return`<div class="fx-tree-row"><button type="button" class="fx-tw${op?" open":""}" data-tw="${y}" aria-label="${op?"Collapse":"Expand"} ${y}">${FX_ICO.chev}</button><button type="button" class="fx-node l1${cur({k:"year",y})}" data-go='{"k":"year","y":"${y}"}'><span class="fx-ico xs">${FX_ICO.folder(1)}</span>${y}</button></div>`
+        +(op?Object.keys(months(y)).sort().reverse().map(ym=>`<button type="button" class="fx-node l2${cur({k:"month",ym})}" data-go='{"k":"month","ym":"${ym}"}'><span class="fx-ico xs">${FX_ICO.folder(1)}</span>${FX_MONTHS[+ym.slice(5)-1]}</button>`).join(""):"")}).join("")}`}
+  function drawList(){items=sorted(itemsFor(loc));const keep=new Set(items.map(i=>i.id));[...sel].forEach(id=>keep.has(id)||sel.delete(id));
+    const arrow=c=>sort.c===c?`<i>${sort.d>0?"▲":"▼"}</i>`:"";
+    const head=mode==="details"?`<div class="fx-head"><button type="button" data-sort="name">Name${arrow("name")}</button><button type="button" data-sort="date">Date modified${arrow("date")}</button><button type="button" data-sort="type">Type${arrow("type")}</button><button type="button" data-sort="size">Size${arrow("size")}</button><span>${loc.k==="bk"&&!q?"Patient":"Status"}</span></div>`:"";
+    const empty=q?`<div class="fx-empty"><b>No items match your search.</b><span>Try a patient name, booking ref, phone number or sample ID.</span></div>`
+      :loc.k==="bk"?`<div class="fx-empty">${FX_ICO.pdf}<b>This folder is empty</b><span>Drag PDF files here to upload them for this patient, or</span><button type="button" class="green sm" data-act="upload">${FX_ICO.upload}Upload PDF</button></div>`
+      :loc.k==="waiting"?`<div class="fx-empty"><b>Every booking has its report 🎉</b></div>`:`<div class="fx-empty"><b>Nothing here yet</b><span>Folders appear as bookings come in.</span></div>`;
+    list.className="fx-list "+mode;
+    list.innerHTML=head+(items.length?`<div class="fx-items">${items.map(i=>mode==="details"
+      ?`<div class="fx-item" data-id="${i.id}">${icon(i)}<span class="fx-name" title="${esc(i.name)}">${esc(i.name)}</span><span class="fx-c">${dateOf(i)}</span><span class="fx-c">${typeOf(i)}</span><span class="fx-c">${sizeOf(i)}</span><span class="fx-c">${infoOf(i)}</span></div>`
+      :`<div class="fx-item" data-id="${i.id}" title="${esc(i.name)}">${icon(i,1)}<span class="fx-name">${i.t==="bk"?`${esc(i.b.ref)}<small>${esc(i.b.patient_name)}</small>`:esc(i.name)}</span></div>`).join("")}</div>`:empty);
+    paintSel();if(loc.k==="bk"&&!q){const b=byId(loc.id);if(b)loadSizes(b)}}
+  function paintSel(){list.querySelectorAll(".fx-item").forEach(el=>el.classList.toggle("sel",sel.has(el.dataset.id)));drawTools();drawStatus();drawPane()}
+  function drawTools(){const s=selItems(),f=s.filter(i=>i.t==="file"),only=f.length&&f.length===s.length;
+    const en={back:hist.length,fwd:fwd.length,up:q||loc.k!=="root",open:s.length===1,download:only,replace:only&&f.length===1,delete:only};
+    root.querySelectorAll("[data-act]").forEach(b=>{if(b.dataset.act in en)b.disabled=!en[b.dataset.act]});
+    root.querySelectorAll("[data-act=details],[data-act=tiles]").forEach(b=>b.classList.toggle("on",b.dataset.act===mode));
+    root.querySelector("[data-act=pane]").classList.toggle("on",pane);root.classList.toggle("no-pane",!pane);
+    const b=ctxBooking();$("#fxUpLabel").textContent=b?`Upload to ${b.ref}`:"Upload";
+    $("#fxCrumbs").innerHTML=crumbs().map((c,i,a)=>(i?`<span class="fx-sep">${FX_ICO.chev}</span>`:`<span class="fx-ico xs">${q?FX_ICO.search:i===0&&a[0].l?FX_ICO.folder(1):FX_ICO.clock}</span>`)+(c.l&&i<a.length-1?`<button type="button" data-crumb='${JSON.stringify(c.l)}'>${esc(c.n)}</button>`:`<b>${esc(c.n)}</b>`)).join("")}
+  function drawStatus(){const n=items.length,s=sel.size;
+    $("#fxStatus").innerHTML=`<span>${n} item${n===1?"":"s"}</span>${s?`<span>${s} item${s===1?"":"s"} selected</span>`:""}${busy?`<span class="fx-busy"><i></i>${esc(busy)}</span>`:""}<span class="fx-live"><i></i>Live · ${allFiles().length} PDFs · ${waiting().length} waiting</span>`}
+  let paneKey="";
+  function drawPane(){if(!pane)return;const el=$("#fxPane"),s=selItems();
+    const target=s.length===1?s[0]:!s.length&&loc.k==="bk"&&!q&&byId(loc.id)?bkItem(byId(loc.id)):null,key=s.length>1?"multi"+s.length:target?target.id+(target.t==="bk"?target.b.status+target.n:""):"loc"+JSON.stringify(loc)+items.length;
+    if(key===paneKey)return;paneKey=key;
+    if(s.length>1){el.innerHTML=`<div class="fx-p-ico">${FX_ICO.pdf}</div><b class="fx-p-name">${s.length} items selected</b>`;return}
+    if(!target){el.innerHTML=`<div class="fx-p-ico">${FX_ICO.folder(items.length)}</div><b class="fx-p-name">${esc(crumbs().pop().n)}</b><p class="muted">${items.length} item${items.length===1?"":"s"}</p><p class="fx-p-tip">Select a file to preview it here.<br>Double-click a folder to open it.</p>`;return}
+    if(target.t==="dir"){el.innerHTML=`<div class="fx-p-ico">${FX_ICO.folder(1)}</div><b class="fx-p-name">${esc(target.name)}</b><p class="muted">File folder · ${sizeOf(target)}</p>`;return}
+    const b=target.b,info=`<dl class="fx-dl"><dt>Patient</dt><dd>${esc(b.patient_name)}${b.patient_age?` · ${esc(ageText(b.patient_age,b.patient_age_unit,true))}`:""}${b.patient_gender?` · ${esc(b.patient_gender)}`:""}</dd>
+      <dt>Booking</dt><dd>${esc(b.ref)}${b.sample_id?` · Sample ${esc(b.sample_id)}`:""}</dd>${b.phone?`<dt>Phone</dt><dd>${esc(b.phone)}</dd>`:""}
+      <dt>Visit</dt><dd>${b.collect_date?fmt(b.collect_date):"—"}${b.slot?` · ${esc(b.slot)}`:""}</dd><dt>Status</dt><dd><span class="pill ${statusMeta(b.status).cls}">${esc(b.status)}</span></dd>
+      <dt>Tests</dt><dd><div class="cell-tests">${(b.booking_items||[]).map(t=>`<span class="test-chip">${esc(t.name)}</span>`).join("")||"—"}</div></dd></dl>`;
+    if(target.t==="bk"){el.innerHTML=`<div class="fx-p-ico">${FX_ICO.folder(target.n)}</div><b class="fx-p-name">${esc(target.name)}</b><p class="muted">${sizeOf(target)}</p>${info}<button type="button" class="green sm fx-p-btn" data-act="upload">${FX_ICO.upload}Upload PDF here</button>`;return}
+    el.innerHTML=`<div class="fx-prev"><div class="fx-prev-load">Loading preview…</div></div><b class="fx-p-name">${esc(target.name)}</b><p class="muted">PDF Document${sizes[target.r.path]?` · ${kb(sizes[target.r.path])}`:""}<br>Uploaded ${target.date?fmtDT(target.date):"—"}</p>
+      <div class="fx-p-acts"><button type="button" class="light sm" data-act="open">${FX_ICO.open}Open</button><button type="button" class="light sm" data-act="download">${FX_ICO.dl}Download</button></div>${info}`;
+    const path=target.r.path,show=u=>{const box=el.querySelector(".fx-prev");if(box&&paneKey===key)box.innerHTML=`<iframe src="${u}#toolbar=0&navpanes=0&view=FitH" title="Preview of ${esc(target.name)}"></iframe>`};
+    const c=urls[path];if(c&&c.exp>Date.now())show(c.u);else signed(path).then(u=>{if(u){urls[path]={u,exp:Date.now()+240000};show(u)}})}
+  function draw(){drawTree();drawList()}
+  // ---------- events ----------
+  root.addEventListener("click",e=>{const a=e.target.closest("[data-act]");if(a&&!a.disabled){act(a.dataset.act);return}
+    const g=e.target.closest("[data-go],[data-crumb]");if(g){go(JSON.parse(g.dataset.go||g.dataset.crumb));return}
+    const tw=e.target.closest("[data-tw]");if(tw){const y=tw.dataset.tw;expanded.has(y)?expanded.delete(y):expanded.add(y);drawTree();return}
+    const so=e.target.closest("[data-sort]");if(so){const c=so.dataset.sort;sort=sort.c===c?{c,d:-sort.d}:{c,d:c==="name"||c==="type"?1:-1};drawList();return}});
+  list.addEventListener("click",e=>{const it=e.target.closest(".fx-item");list.focus({preventScroll:true});
+    if(!it){if(!e.target.closest("button")){sel.clear();paintSel()}return}const id=it.dataset.id;
+    if(e.shiftKey&&anchor){const ids=items.map(i=>i.id),a=ids.indexOf(anchor),b=ids.indexOf(id);if(!(e.ctrlKey||e.metaKey))sel.clear();ids.slice(Math.min(a,b),Math.max(a,b)+1).forEach(x=>sel.add(x))}
+    else if(e.ctrlKey||e.metaKey){sel.has(id)?sel.delete(id):sel.add(id);anchor=id}else{sel=new Set([id]);anchor=id}paintSel()});
+  list.addEventListener("dblclick",e=>{const it=e.target.closest(".fx-item");if(it)openItem(items.find(i=>i.id===it.dataset.id))});
+  list.addEventListener("keydown",e=>{const k=e.key,ids=items.map(i=>i.id),cur=ids.indexOf(anchor);
+    if(k==="Enter"){e.preventDefault();const s=selItems();if(s.length===1)openItem(s[0]);else if(s.length&&s.every(i=>i.t==="file"))s.forEach(viewFile);return}
+    if(k==="Delete"){e.preventDefault();const f=selItems().filter(i=>i.t==="file");if(f.length)del(f);return}
+    if(k==="Backspace"||(e.altKey&&k==="ArrowUp")){e.preventDefault();act("up");return}
+    if(e.altKey&&k==="ArrowLeft"){e.preventDefault();act("back");return}if(e.altKey&&k==="ArrowRight"){e.preventDefault();act("fwd");return}
+    if((e.ctrlKey||e.metaKey)&&k.toLowerCase()==="a"){e.preventDefault();act("selall");return}
+    const step={ArrowDown:1,ArrowRight:mode==="tiles"?1:0,ArrowUp:-1,ArrowLeft:mode==="tiles"?-1:0,Home:-1e9,End:1e9}[k];if(step===undefined||!ids.length)return;
+    e.preventDefault();if(!step)return;const from=cur<0?(step>0?-1:ids.length):cur;let n=Math.max(0,Math.min(ids.length-1,from+step));
+    if(mode==="tiles"&&(k==="ArrowDown"||k==="ArrowUp")&&cur>=0){const per=Math.max(1,Math.floor(list.querySelector(".fx-items").clientWidth/list.querySelector(".fx-item").offsetWidth));n=Math.max(0,Math.min(ids.length-1,cur+(k==="ArrowDown"?per:-per)))}
+    sel=new Set([ids[n]]);anchor=ids[n];paintSel();list.querySelector(`[data-id="${ids[n]}"]`)?.scrollIntoView({block:"nearest"})});
+  // context menu
+  const closeMenu=()=>{menu.hidden=true};
+  list.addEventListener("contextmenu",e=>{e.preventDefault();const it=e.target.closest(".fx-item");
+    if(it&&!sel.has(it.dataset.id)){sel=new Set([it.dataset.id]);anchor=it.dataset.id;paintSel()}if(!it&&sel.size){sel.clear();paintSel()}
+    const s=selItems(),f=s.filter(i=>i.t==="file"),only=f.length&&f.length===s.length,b=ctxBooking();
+    const opts=s.length?[[s.length===1,"open",FX_ICO.open,s[0]?.t==="file"?"Open":"Open folder"],[only,"download",FX_ICO.dl,f.length>1?`Download ${f.length} files`:"Download"],[only&&f.length===1,"replace",FX_ICO.replace,"Replace with new PDF…"],[!!b,"upload",FX_ICO.upload,b?`Upload PDF to ${b.ref}…`:""],"-",[only,"delete",FX_ICO.del,"Delete",1]]
+      :[[1,"upload",FX_ICO.upload,b?`Upload PDF to ${b.ref}…`:"Upload PDF…"],"-",[1,"details",FX_ICO.details,"View: Details"],[1,"tiles",FX_ICO.tiles,"View: Large icons"],[1,"selall",FX_ICO.details,"Select all"]];
+    menu.innerHTML=opts.filter(o=>o==="-"||o[0]).map(o=>o==="-"?"<hr>":`<button type="button" data-m="${o[1]}"${o[4]?' class="danger-t"':""}>${o[2]}${esc(o[3])}</button>`).join("");
+    menu.hidden=false;const r=menu.getBoundingClientRect();menu.style.left=Math.min(e.clientX,innerWidth-r.width-8)+"px";menu.style.top=Math.min(e.clientY,innerHeight-r.height-8)+"px"});
+  menu.addEventListener("click",e=>{const m=e.target.closest("[data-m]");if(!m)return;closeMenu();act(m.dataset.m)});
+  document.addEventListener("click",e=>{if(!menu.contains(e.target))closeMenu()});document.addEventListener("keydown",e=>{if(e.key==="Escape")closeMenu()});
+  addEventListener("scroll",closeMenu,true);addEventListener("resize",closeMenu);
+  // drag & drop PDFs from the computer
+  let dropTo=null;const hasFiles=e=>[...(e.dataTransfer?.types||[])].includes("Files");
+  list.addEventListener("dragover",e=>{if(!hasFiles(e))return;e.preventDefault();const it=e.target.closest(".fx-item"),i=it&&items.find(x=>x.id===it.dataset.id);
+    list.querySelectorAll(".fx-item.drop").forEach(x=>x!==it&&x.classList.remove("drop"));
+    const b=i&&i.t==="bk"?i.b:loc.k==="bk"&&!q?byId(loc.id):null;if(i&&i.t==="bk")it.classList.add("drop");
+    dropTo=b;list.classList.add("dragging");list.dataset.drop=b?`Drop to upload to ${b.ref} – ${b.patient_name}`:"Drop to upload. You'll pick the patient next."});
+  list.addEventListener("dragleave",e=>{if(!list.contains(e.relatedTarget)){list.classList.remove("dragging");list.querySelectorAll(".fx-item.drop").forEach(x=>x.classList.remove("drop"))}});
+  list.addEventListener("drop",e=>{if(!hasFiles(e))return;e.preventDefault();list.classList.remove("dragging");list.querySelectorAll(".fx-item.drop").forEach(x=>x.classList.remove("drop"));
+    const f=[...e.dataTransfer.files];if(!f.length)return;dropTo?uploadMany(dropTo,f):choosePatient(f)});
+  // search
+  $("#fxSearch").addEventListener("input",e=>{q=e.target.value.trim();sel.clear();anchor=null;drawList();drawTree()});
+  $("#fxSearch").addEventListener("keydown",e=>{if(e.key==="Escape"&&q)clearQ();if(e.key==="ArrowDown"){e.preventDefault();list.focus()}});
+  // Toolbar icons (markup stays light in the HTML)
+  root.querySelectorAll("[data-ico]").forEach(el=>el.insertAdjacentHTML("afterbegin",FX_ICO[el.dataset.ico]));
+  draw();
+  return{setRows(r){rows=r;if(loc.k==="bk"&&!byId(loc.id))loc={k:"root"};draw()}}}
+// Mirror a wide table's horizontal scrollbar above it, so you can scroll sideways without going to the bottom.
+function topScroll(bar,wrap){if(!bar||!wrap)return;const inner=bar.firstElementChild;
+  const size=()=>{inner.style.width=wrap.scrollWidth+"px";bar.hidden=wrap.scrollWidth<=wrap.clientWidth+1;bar.scrollLeft=wrap.scrollLeft};
+  const sync=(from,to)=>()=>{if(to.scrollLeft!==from.scrollLeft)to.scrollLeft=from.scrollLeft};
+  bar.addEventListener("scroll",sync(bar,wrap));wrap.addEventListener("scroll",sync(wrap,bar));
+  const ro=new ResizeObserver(size);ro.observe(wrap);if(wrap.firstElementChild)ro.observe(wrap.firstElementChild);
+  new MutationObserver(size).observe(wrap,{childList:true,subtree:true});size()}
 async function initAdmin(){const body=$("#bookingRows");if(!body||!await guard(["admin"],"login.html"))return;
   $("#logout").onclick=async e=>{e.preventDefault();await sb.auth.signOut();location.href="login.html"};
   // Sidebar tabs: the URL hash (#bookings, #reports...) decides which section is visible.
@@ -886,8 +1204,8 @@ async function initAdmin(){const body=$("#bookingRows");if(!body||!await guard([
   $("#cashHandovers").addEventListener("click",async e=>{const b=e.target.closest("[data-receive]");if(!b)return;b.disabled=true;
     const{error}=await sb.from("cash_handovers").update({received:true,received_at:new Date().toISOString()}).eq("id",b.dataset.receive);
     if(error){b.disabled=false;return fail(error)}toast("Marked as received")});
-  const analytics=adminAnalytics();adminLive();
-  bookingsTable(body,rows=>{adminRows=rows;drawCash();analytics.setRows(rows);
+  topScroll($("#bkTopScroll"),$("#bkTableWrap"));const analytics=adminAnalytics();adminLive();const files=adminFiles();
+  bookingsTable(body,rows=>{adminRows=rows;drawCash();analytics.setRows(rows);files.setRows(rows);
     $("#recentRows").innerHTML=rows.slice(0,5).map(b=>`<tr><td><b>${esc(b.ref)}</b></td><td>${esc(b.patient_name)}</td><td>${fmt(b.collect_date)} · ${esc(b.slot)}</td><td>${money(b.total)}</td><td><span class="pill ${statusMeta(b.status).cls}">${esc(b.status)}</span></td><td>${esc(b.payment)} · ${esc(b.payment_method||"Cash")}</td></tr>`).join("")||'<tr><td colspan="6" class="muted">No bookings yet.</td></tr>';
     const t=today(),live=rows.filter(x=>x.status!=="Cancelled");
     $("#bookingCount").textContent=rows.length;$("#todayCount").textContent=rows.filter(x=>new Date(x.created_at).toLocaleDateString("en-CA")===t).length;
@@ -961,13 +1279,29 @@ async function initAdmin(){const body=$("#bookingRows");if(!body||!await guard([
   $("#userSearch").addEventListener("input",drawUsers);$("#userRole").addEventListener("change",drawUsers);
 
   // --- Test Pricing tab ---
-  const loadTests=async()=>{const{data,error}=await sb.from("tests").select("*").order("id");if(error)return fail(error);
-    $("#testRows").innerHTML=data.map(t=>`<tr data-test="${t.id}"><td><input name="name" value="${esc(t.name)}" style="min-width:200px"></td><td><input name="category" value="${esc(t.category)}" style="min-width:120px"></td><td><input name="price" type="number" min="0" value="${t.price}" style="width:90px"></td><td><input name="mrp" type="number" min="0" value="${t.mrp??""}" style="width:90px"></td><td><input name="turnaround" value="${esc(t.turnaround)}" style="width:110px"></td><td><input name="instructions" value="${esc(t.instructions||"")}" placeholder="e.g. Fast 10-12 hours" style="min-width:220px"></td><td><input name="active" type="checkbox" style="width:auto"${t.active?" checked":""}></td><td><button class="green" data-save-test style="padding:7px 12px;font-size:12px">Save</button></td></tr>`).join("")};
-  $("#testRows").addEventListener("click",async e=>{if(!e.target.closest("[data-save-test]"))return;const tr=e.target.closest("tr"),v=n=>tr.querySelector(`[name=${n}]`);
-    const{error}=await sb.from("tests").update({name:v("name").value.trim(),category:v("category").value.trim(),price:+v("price").value,mrp:v("mrp").value?+v("mrp").value:null,turnaround:v("turnaround").value.trim(),instructions:v("instructions").value.trim()||null,active:v("active").checked}).eq("id",+tr.dataset.test);
-    if(error)return fail(error);toast("Test saved")});
-  $("#newTestForm").onsubmit=async e=>{e.preventDefault();const f=e.target;
-    const{error}=await sb.from("tests").insert({name:f.name.value.trim(),category:f.category.value.trim(),price:+f.price.value,mrp:+f.mrp.value,sample:f.sample.value.trim(),turnaround:f.turnaround.value.trim(),instructions:f.instructions.value.trim()||null});
+  // 600+ tests: search, filter and show 100 rows at a time. "Home page" tick = trending test on the home page.
+  let TP=[],tpHas=false,tpLimit=100;
+  const drawTP=()=>{const q=catNorm($("#tpSearch").value),f=$("#tpShow").value;
+    const list=TP.filter(t=>(!q||catNorm(`${t.name} ${t.category} ${t.code??""}`).includes(q))&&(f==="all"||(f==="trending"?t.trending:f==="hidden"?!t.active:t.category===f)));
+    $("#tpCount").textContent=`${list.length} of ${TP.length} tests`;
+    $("#testRows").innerHTML=list.length?list.slice(0,tpLimit).map(t=>`<tr data-test="${t.id}"><td><input name="name" value="${esc(t.name)}" style="min-width:220px">${t.code?`<small class="muted tp-code">BYOS #${t.code} · ${esc(t.sample||"")}</small>`:""}</td><td><input name="category" value="${esc(t.category)}" style="min-width:150px" list="tpCats"></td><td><input name="price" type="number" min="0" value="${t.price}" style="width:90px"></td><td><input name="mrp" type="number" min="0" value="${t.mrp??""}" style="width:90px"></td><td><input name="turnaround" value="${esc(t.turnaround)}" style="width:110px"></td><td><input name="instructions" value="${esc(t.instructions||"")}" placeholder="e.g. Fast 10-12 hours" style="min-width:220px"></td><td class="tp-tick"><input name="trending" type="checkbox" style="width:auto"${t.trending?" checked":""}${tpHas?"":' disabled title="Run supabase/test_catalog.sql first"'}></td><td class="tp-tick"><input name="active" type="checkbox" style="width:auto"${t.active?" checked":""}></td><td><button class="green" data-save-test style="padding:7px 12px;font-size:12px">Save</button></td></tr>`).join("")
+      +(list.length>tpLimit?`<tr><td colspan="9"><button type="button" class="light" id="tpMore">Show ${Math.min(100,list.length-tpLimit)} more (${tpLimit} of ${list.length} shown)</button></td></tr>`:"")
+      :`<tr><td colspan="9" class="muted">No tests match.</td></tr>`};
+  const loadTests=async()=>{const{data,error}=await sb.from("tests").select("*").order("trending",{ascending:false}).order("name");
+    if(error){if(!/trending/.test(error.message))return fail(error);const r=await sb.from("tests").select("*").order("id");if(r.error)return fail(r.error);TP=r.data}else TP=data;
+    tpHas=TP.some(t=>"trending" in t);const cats=[...new Set(TP.map(t=>t.category).filter(Boolean))].sort();
+    $("#tpCats").innerHTML=cats.map(c=>`<option value="${esc(c)}">`).join("");
+    const sel=$("#tpShow"),cur=sel.value;sel.innerHTML=`<option value="all">All tests</option>${tpHas?'<option value="trending">On home page (trending)</option>':""}<option value="hidden">Hidden from website</option><optgroup label="Category">${cats.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("")}</optgroup>`;
+    if([...sel.options].some(o=>o.value===cur))sel.value=cur;drawTP()};
+  $("#tpSearch").addEventListener("input",()=>{tpLimit=100;drawTP()});$("#tpShow").addEventListener("change",()=>{tpLimit=100;drawTP()});
+  $("#testRows").addEventListener("click",async e=>{if(e.target.id==="tpMore"){tpLimit+=100;drawTP();return}
+    if(!e.target.closest("[data-save-test]"))return;const tr=e.target.closest("tr"),v=n=>tr.querySelector(`[name=${n}]`);
+    const row={name:v("name").value.trim(),category:v("category").value.trim(),price:+v("price").value,mrp:v("mrp").value?+v("mrp").value:null,turnaround:v("turnaround").value.trim(),instructions:v("instructions").value.trim()||null,active:v("active").checked};
+    if(tpHas)row.trending=v("trending").checked;
+    const{error}=await sb.from("tests").update(row).eq("id",+tr.dataset.test);
+    if(error)return fail(error);const t=TP.find(x=>x.id===+tr.dataset.test);if(t)Object.assign(t,row);toast("Test saved")});
+  $("#newTestForm").onsubmit=async e=>{e.preventDefault();const f=e.target;const row={name:f.name.value.trim(),category:f.category.value.trim(),price:+f.price.value,mrp:+f.mrp.value,sample:f.sample.value.trim(),turnaround:f.turnaround.value.trim(),instructions:f.instructions.value.trim()||null};
+    if(tpHas)row.trending=f.trending.checked;const{error}=await sb.from("tests").insert(row);
     if(error)return fail(error);toast("Test added");f.reset();loadTests()};
   // Booking setting: max bookings per time slot.
   sb.from("app_settings").select("value").eq("key","slot_capacity").maybeSingle().then(({data})=>{if(data)$("#slotCapForm").cap.value=data.value});
@@ -1188,13 +1522,19 @@ async function initStaff(){const root=$("#staffJobs");if(!root)return;const c=aw
 // ---------- staff: upload reports for ANY pending patient ----------
 let ALL_BOOKINGS=[];
 async function initStaffReports(){const root=$("#staffReports");if(!root)return;
-  const load=async()=>{const{data,error}=await sb.from("bookings").select("id,ref,patient_name,booking_items(name),reports(id,path)").order("created_at",{ascending:false});
+  const load=async()=>{const{data,error}=await sb.from("bookings").select("id,ref,patient_name,status,booking_items(name),reports(id,path)").order("created_at",{ascending:false});
     if(error)return fail(error);ALL_BOOKINGS=data;draw()};
   const draw=()=>{const q=($("#reportSearch").value||"").toLowerCase();const showAll=$("#showUploaded").checked;
     const list=ALL_BOOKINGS.filter(b=>(showAll||!b.reports.length)&&(b.patient_name||"").toLowerCase().includes(q));
-    root.innerHTML=list.length?list.map(b=>`<div class="job" data-id="${b.id}"><div class="jobhead"><b>${esc(b.ref)}</b>${b.reports.length?'<span class="pill green">Uploaded</span>':'<span class="pill amber">Pending</span>'}</div><div class="patient">${esc(b.patient_name)}</div><div class="tests">${b.booking_items.map(i=>esc(i.name)).join(", ")}</div><div class="job-actions" style="align-items:center">${b.reports.length?`<a href="#" data-view="${esc(b.reports[0].path)}"><b>View current PDF</b></a>`:""}<input type="file" accept="application/pdf" data-up style="max-width:260px"></div></div>`).join(""):`<div class="empty">${q?"No matching patient found.":"No pending reports right now 🎉"}</div>`};
+    root.innerHTML=list.length?list.map(b=>`<div class="job" data-id="${b.id}"><div class="jobhead"><b>${esc(b.ref)}</b>${b.reports.length?'<span class="pill green">Uploaded</span>':'<span class="pill amber">Pending</span>'}</div><div class="patient">${esc(b.patient_name)}</div><div class="tests">${b.booking_items.map(i=>esc(i.name)).join(", ")}</div><div class="job-actions st-row"><label class="st-label" for="rs-${b.id}">Status</label><select id="rs-${b.id}" data-st class="cell-select ${statusMeta(b.status).cls}">${STATUSES.map(v=>`<option${v===b.status?" selected":""}${v==="Cancelled"&&b.status!=="Cancelled"?" disabled":""}>${esc(v)}${v==="Cancelled"&&b.status!=="Cancelled"?" (admin only)":""}</option>`).join("")}</select></div><div class="job-actions" style="align-items:center">${b.reports.length?`<a href="#" data-view="${esc(b.reports[0].path)}"><b>View current PDF</b></a>`:""}<input type="file" accept="application/pdf" data-up style="max-width:260px"></div></div>`).join(""):`<div class="empty">${q?"No matching patient found.":"No pending reports right now 🎉"}</div>`};
   $("#reportSearch").addEventListener("input",draw);
   $("#showUploaded").addEventListener("change",draw);
+  // Status dropdown: same list as admin. Saves instantly; Cancelled stays admin-only.
+  root.addEventListener("change",async e=>{const sel=e.target.closest("[data-st]");if(!sel)return;
+    const id=sel.closest("[data-id]").dataset.id,b=ALL_BOOKINGS.find(x=>x.id===id),v=sel.value;sel.disabled=true;
+    const{error}=await sb.rpc("set_status",{p_id:id,p_status:v});sel.disabled=false;
+    if(error){if(b)sel.value=b.status;return toast(/Not allowed/.test(error.message)?"Staff can't set this status yet. Ask the admin to run supabase/staff_status_update.sql.":error.message,false)}
+    if(b)b.status=v;sel.className="cell-select "+statusMeta(v).cls;toast("Status updated to "+v)});
   root.addEventListener("change",async e=>{if(e.target.dataset.up===undefined)return;const id=e.target.closest("[data-id]").dataset.id;const file=e.target.files[0];if(!file)return;
     if(file.type!=="application/pdf"||file.size>10*1048576)return toast("Upload a PDF under 10 MB");
     const path=`${id}/${Date.now()}.pdf`;let r=await sb.storage.from("reports").upload(path,file,{contentType:"application/pdf"});if(r.error)return fail(r.error);
@@ -1223,10 +1563,4 @@ function initTheme(){const make=(cls="")=>{const b=document.createElement("butto
   else if(staffOut){const w=document.createElement("span");w.className="hdr-actions";staffOut.replaceWith(w);w.append(make("on-dark-btn"),staffOut)}
   else document.body.appendChild(make("floating"));
   paintThemeButtons()}
-// "Buy me a coffee" for the developer: shown only when BMC_URL is set in assets/supabase.js.
-const BMC_CUP='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h13v5a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5V9Z"/><path d="M17 10.5h1.5a2.5 2.5 0 0 1 0 5H17"/><path d="M8 3.5c0 1 1 1.3 1 2.3M12 3.5c0 1 1 1.3 1 2.3"/></svg>';
-function initCoffee(){const url=typeof BMC_URL==="string"&&/^https:\/\/(www\.)?(buymeacoffee\.com|buymeacoff\.ee)\//.test(BMC_URL)?BMC_URL:"";if(!url)return;
-  const box=$("#bmcBox");if(box){$("#bmcBtn").href=url;$("#bmcBtn").innerHTML=BMC_CUP+"<span>Buy me a coffee</span>";box.hidden=false}
-  const foot=$(".footer .wrap");if(foot&&!foot.querySelector(".bmc-link")){const a=document.createElement("a");a.className="bmc-link";a.href=url;a.target="_blank";a.rel="noopener";
-    a.innerHTML=BMC_CUP+"Buy me a coffee";foot.append(" · ",a)}}
-document.addEventListener("DOMContentLoaded",()=>{initTheme();initCoffee();showAuthLinkError();initNav();initLogin();initStaffLogin();initAdminLogin();initTagline();initHome();initCart();initBooking();initProfile();initAccount();initReceipt();initAdmin();initStaff()});
+document.addEventListener("DOMContentLoaded",()=>{initTheme();showAuthLinkError();initNav();initLogin();initStaffLogin();initAdminLogin();initTagline();initHome();initCatalog();initCart();initBooking();initProfile();initAccount();initReceipt();initAdmin();initStaff()});
