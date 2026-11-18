@@ -1,6 +1,6 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><script>try{if(localStorage.getItem("lm_theme")==="dark")document.documentElement.dataset.theme="dark"}catch(e){}</script><meta name="theme-color" content="#123b69"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>LabMitra Admin Dashboard</title><link rel="icon" type="image/svg+xml" href="../../assets/logo-mark.svg?v=1794539840"><link rel="stylesheet" href="../../assets/style.css?v=1794539840"></head><body>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><script>try{if(localStorage.getItem("lm_theme")==="dark")document.documentElement.dataset.theme="dark"}catch(e){}</script><meta name="theme-color" content="#123b69"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>LabMitra Admin Dashboard</title><link rel="icon" type="image/svg+xml" href="../../assets/logo-mark.svg?v=1794984699"><link rel="stylesheet" href="../../assets/style.css?v=1794984699"></head><body>
 <div class="dashboard">
-<aside class="side"><a class="brand" href="../../index.html"><img class="logo" src="../../assets/logo-mark.svg?v=1794539840" alt="" width="38" height="38"><span class="wordmark">Lab<b>Mitra</b></span></a>
+<aside class="side"><a class="brand" href="../../index.html"><img class="logo" src="../../assets/logo-mark.svg?v=1794984699" alt="" width="38" height="38"><span class="wordmark">Lab<b>Mitra</b></span></a>
 <nav>
   <a href="#overview" data-tab-link="overview">Overview</a>
   <a href="#bookings" data-tab-link="bookings">Bookings</a>
@@ -9,6 +9,7 @@
   <a href="#cash" data-tab-link="cash">Cash</a>
   <a href="#users" data-tab-link="users">Users</a>
   <a href="#staffaccess" data-tab-link="staffaccess">Staff access</a>
+  <a href="#labs" data-tab-link="labs">Labs</a>
   <a href="#pricing" data-tab-link="pricing">Test Pricing</a>
   <a href="../../index.html" target="_blank">Patient website ↗</a>
   <a href="#" id="logout">Logout</a>
@@ -139,6 +140,20 @@
   </section>
 </section>
 
+<!-- LABS (v2) -->
+<section data-tab="labs" hidden>
+  <div class="dash-top"><div><h1 class="page-title">Labs</h1><div class="sub">Patients choose a lab at the top of the website and every price follows that lab. LabMitra price = the lab's website price, ending in 9 (₹350 → ₹349; ₹1,999 stays ₹1,999). One lab per booking. Labs with no tests show as "Coming soon".</div></div></div>
+  <div class="lab-cards" id="labCards"><div class="muted">Loading…</div></div>
+  <section class="panel" id="labPanel" hidden>
+    <div class="panel-head"><h2 id="labPanelTitle">Price list</h2></div>
+    <div class="tp-bar"><input id="ltSearch" placeholder="Search this lab's tests by name, code or category…" autocomplete="off"><span class="muted" id="ltCount"></span></div>
+    <div class="table-wrap"><table><thead><tr><th>Lab code</th><th>Test</th><th>Website price ₹</th><th>LabMitra price ₹</th><th>Report time</th><th>Active</th><th></th></tr></thead><tbody id="ltRows"></tbody></table></div>
+    <form id="ltAddForm" class="lt-add"><b>Add a test to this lab</b>
+      <div class="lt-add-grid"><input name="test" list="ltMasters" placeholder="Start typing a test name…" required autocomplete="off"><input name="web" type="number" min="0" placeholder="Website price ₹"><input name="price" type="number" min="0" placeholder="LabMitra price ₹" required><input name="tat" placeholder="Report time, e.g. 24 hours"><button class="green">Add</button></div>
+      <datalist id="ltMasters"></datalist><small class="muted">Typing a website price fills the LabMitra price (ends in 9). A brand-new test must first be added in Test Pricing.</small></form>
+  </section>
+</section>
+
 <!-- TEST PRICING -->
 <section data-tab="pricing" hidden>
   <div class="dash-top"><div><h1 class="page-title">Test Pricing</h1><div class="sub">Edit prices and details. Tick "Home page" to show a test in Popular tests on the home page; untick "Active" to hide it from the website.</div></div></div>
@@ -147,13 +162,13 @@
     <form id="slotCapForm" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap"><div><label>Max bookings per slot</label><input name="cap" type="number" min="1" value="5" style="width:140px"></div><button class="green">Save</button></form>
   </section>
   <section class="panel"><div class="tp-bar"><input id="tpSearch" placeholder="Search test name, category or BYOS number…" autocomplete="off"><select id="tpShow"><option value="all">All tests</option></select><span class="muted" id="tpCount"></span></div><datalist id="tpCats"></datalist>
-    <div class="table-wrap"><table><thead><tr><th>Test name</th><th>Category</th><th>Price ₹</th><th>MRP ₹</th><th>Report time</th><th>Prep / fasting instructions</th><th title="Show on the home page as a popular test">Home page</th><th>Active</th><th></th></tr></thead><tbody id="testRows"></tbody></table></div></section>
+    <div class="table-wrap"><table><thead><tr><th>Test name</th><th>Category</th><th class="tp-p">Price ₹</th><th class="tp-p">MRP ₹</th><th class="tp-l" hidden>Lab prices</th><th>Report time</th><th>Prep / fasting instructions</th><th title="Show on the home page as a popular test">Home page</th><th>Active</th><th></th></tr></thead><tbody id="testRows"></tbody></table></div></section>
   <section class="panel" style="padding:18px 19px"><h2 style="font-size:17px;margin:0 0 4px">Add a new test</h2>
     <form id="newTestForm"><div class="form-grid">
       <div><label>Test name</label><input name="name" required placeholder="e.g. Iron Studies"></div>
       <div><label>Category</label><input name="category" required placeholder="e.g. Blood Tests"></div>
-      <div><label>Price ₹</label><input name="price" type="number" min="0" required></div>
-      <div><label>MRP ₹</label><input name="mrp" type="number" min="0" required></div>
+      <div class="tp-p tp-pf"><label>Price ₹</label><input name="price" type="number" min="0" required></div>
+      <div class="tp-p tp-pf"><label>MRP ₹</label><input name="mrp" type="number" min="0" required></div>
       <div><label>Sample</label><input name="sample" value="Blood" required></div>
       <div><label>Report time</label><input name="turnaround" value="24 hours" required></div>
     </div>
@@ -165,4 +180,4 @@
 
 </main></div>
 <div class="toast"></div>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script><script src="../../assets/supabase.js"></script><script src="../../assets/app.js?v=1794539840"></script></body></html>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script><script src="../../assets/supabase.js"></script><script src="../../assets/app.js?v=1794984699"></script></body></html>

@@ -98,8 +98,8 @@ function drawMobileNav(c,count){let n=$("#mobileNav");
 // ---------- floating "Proceed to cart" bar (phone: above the tab bar, computer: bottom-right card) ----------
 async function drawCartBar(count,bump){let bar=$("#cartBar");const page=location.pathname.split("/").pop()||"index.html";
   if(!count||["cart.html","booking.html","login.html"].includes(page)){if(bar)bar.classList.remove("show");return}
-  const{data}=await sb.from("cart_items").select("tests(name,price)");const items=(data||[]).map(r=>r.tests).filter(Boolean);
-  const total=items.reduce((s,t)=>s+t.price,0);
+  let items=[];try{items=await getCart()}catch(_){}
+  const total=items.filter(t=>t.avail!==false).reduce((s,t)=>s+t.price,0);
   if(!bar){bar=document.createElement("a");bar.id="cartBar";bar.className="cart-bar";bar.href="cart.html";document.body.appendChild(bar)}
   bar.setAttribute("aria-label",`Cart: ${count} ${count===1?"test":"tests"}, ${money(total)}. Proceed to cart`);
   bar.innerHTML=`<span class="cb-icon">${MNAV_ICONS.cart}<b>${count}</b></span>
@@ -223,6 +223,101 @@ function initTagline(){const h1=$("#tagline");if(!h1)return;let i=0;
   setInterval(()=>{const span=h1.querySelector("span");span.classList.add("out");
     setTimeout(()=>{i=(i+1)%TAGLINES.length;span.innerHTML=TAGLINES[i];span.classList.remove("out")},400)},3000)}
 
+// ---------- v2: labs (patient picks the lab on EACH test; one booking can mix labs) ----------
+// Before supabase/labs_v2.sql is run, LAB.on stays false and the site keeps working on single prices.
+const LAB={on:false,list:[],by:new Map(),pick:{},cartLab:true,ready:null};
+const FLASK_ICON='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6M10 3v6.5L4.6 18.4A1.7 1.7 0 0 0 6 21h12a1.7 1.7 0 0 0 1.4-2.6L14 9.5V3"/><path d="M7.5 15h9"/></svg>';
+// Supabase returns at most 1000 rows per request, so read big lists page by page.
+async function fetchAll(make){const out=[];for(let from=0;;from+=1000){const{data,error}=await make().range(from,from+999);if(error)throw error;out.push(...data);if(data.length<1000)return out}}
+function labInit(){return LAB.ready||(LAB.ready=(async()=>{
+  const{data,error}=await sb.from("labs").select("*").eq("active",true).order("sort");if(error||!data?.length)return LAB;
+  let rows;try{rows=await fetchAll(()=>sb.from("lab_tests").select("*").eq("active",true).order("id"))}catch(_){return LAB}
+  const labs=new Map(data.map(l=>[l.id,l]));LAB.on=true;
+  rows.forEach(r=>{const l=labs.get(r.lab_id);if(!l)return;(LAB.by.get(r.test_id)||LAB.by.set(r.test_id,[]).get(r.test_id)).push({...r,lab:l})});
+  // Recommended lab first, then cheapest.
+  LAB.by.forEach(a=>a.sort((x,y)=>(y.lab.recommended-x.lab.recommended)||(x.price-y.price)||(x.lab.sort-y.lab.sort)));
+  const cnt={};rows.forEach(r=>cnt[r.lab_id]=(cnt[r.lab_id]||0)+1);LAB.list=data.map(l=>({...l,count:cnt[l.id]||0}));
+  try{LAB.pick=JSON.parse(localStorage.getItem("lm_testlab")||"{}")||{}}catch(_){LAB.pick={}}
+  return LAB})())}
+const offered=id=>LAB.by.has(id);
+const labOpts=id=>LAB.by.get(id)||[];
+// The lab used for a test: the patient's pick if that lab still offers it, else Recommended/cheapest.
+function chosen(id){const o=labOpts(id);return o.find(x=>x.lab_id===+LAB.pick[id])||o[0]||null}
+function withLab(t){if(!LAB.on||!t)return t;const c=chosen(t.id);
+  return c?{...t,price:c.price,mrp:null,turnaround:c.turnaround||t.turnaround,tat_minutes:c.tat_minutes??t.tat_minutes,lab:c.lab,pcount:c.param_count||0,avail:true}:{...t,avail:false}}
+function rememberLab(id,labId){LAB.pick[id]=labId;try{localStorage.setItem("lm_testlab",JSON.stringify(LAB.pick))}catch(_){}}
+// Lab chooser shown on every test (tile, catalogue row, cart): a button that opens a styled list of labs.
+const LAB_TONES=["#1d70b7","#12a594","#8e4ec6","#f2630f","#2b9a66","#d6409f","#3e63dd","#b98900"];
+const labTone=l=>LAB_TONES[(l.sort||l.id||0)%LAB_TONES.length];
+const labInitials=n=>n.replace(/[^A-Za-z ]/g,"").split(/\s+/).filter(Boolean).slice(0,2).map(w=>w[0]).join("").toUpperCase()||"L";
+const CARET='<svg class="ld-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>';
+function labSelect(t){if(!LAB.on)return"";const o=labOpts(t.id),c=chosen(t.id);if(!c)return"";
+  if(o.length===1)return`<div class="tile-lab one">${FLASK_ICON}<span>Lab</span><b>${esc(c.lab.name)}</b>${c.lab.recommended?'<em>Recommended</em>':""}</div>`;
+  return`<button type="button" class="tile-lab lab-dd" data-lab-dd="${t.id}" aria-haspopup="listbox" aria-expanded="false" aria-label="Lab for ${esc(t.name)}: ${esc(c.lab.name)}, ${money(c.price)}. Change lab">
+    <i class="ld-ic" aria-hidden="true">${FLASK_ICON}</i><span class="ld-txt"><small>Lab · ${o.length} options</small><b>${esc(c.lab.name)}</b></span><span class="ld-price">${money(c.price)}</span>${CARET}</button>`}
+async function chooseLab(id,labId){rememberLab(id,labId);
+  if(CART_IDS.has(id)&&LAB.cartLab){const{error}=await sb.from("cart_items").update({lab_id:labId}).eq("test_id",id);if(error)fail(error)}
+  const c=chosen(id);if(c)toast(`${c.lab.name} · ${money(c.price)}`);document.dispatchEvent(new CustomEvent("lm-lab",{detail:id}));initNav()}
+// One floating list, placed under whichever lab button was tapped (cards clip their own overflow).
+let labPop=null,labPopFor=null;
+function closeLabPop(focusBack){if(!labPop||labPop.hidden)return;labPop.hidden=true;
+  const b=document.querySelector(`[data-lab-dd="${labPopFor}"][aria-expanded="true"]`);if(b){b.setAttribute("aria-expanded","false");if(focusBack)b.focus()}labPopFor=null}
+function openLabPop(btn){const id=+btn.dataset.labDd,o=labOpts(id),c=chosen(id);if(!o.length)return;
+  if(!labPop){labPop=document.createElement("div");labPop.className="lab-pop";labPop.setAttribute("role","listbox");labPop.hidden=true;document.body.appendChild(labPop)}
+  const low=Math.min(...o.map(x=>x.price)),high=Math.max(...o.map(x=>x.price)),t=TESTS.find(x=>x.id===id);
+  labPop.innerHTML=`<div class="lp-h"><b>Choose a lab</b><small>${esc(t?.name||"")}</small></div>`+o.map(x=>{const on=x.lab_id===c.lab_id;
+    return`<button type="button" role="option" aria-selected="${on}" class="lp-opt${on?" on":""}" data-pick-lab="${x.lab_id}">
+      <i class="ld-ic" aria-hidden="true">${FLASK_ICON}</i>
+      <span class="lp-main"><b>${esc(x.lab.name)}</b><span class="lp-tags">${x.lab.recommended?'<em class="t-rec">Recommended</em>':""}${x.price===low&&low<high?'<em class="t-low">Lowest price</em>':""}</span>
+        <small>${[x.turnaround?`Report: ${esc(x.turnaround)}`:"",x.param_count?`${x.param_count} parameter${x.param_count===1?"":"s"}`:""].filter(Boolean).join(" · ")||"Home sample collection"}</small></span>
+      <span class="lp-right"><b>${money(x.price)}</b>${x.price<high?`<small>Save ${money(high-x.price)}</small>`:""}</span>
+      <span class="lp-check">${on?CHECK_ICON:""}</span></button>`}).join("");
+  labPopFor=id;btn.setAttribute("aria-expanded","true");labPop.hidden=false;
+  const r=btn.getBoundingClientRect(),w=Math.min(Math.max(r.width,300),innerWidth-16),h=labPop.offsetHeight;
+  labPop.style.width=w+"px";labPop.style.left=Math.max(8,Math.min(r.left,innerWidth-w-8))+"px";
+  labPop.style.top=(r.bottom+6+h>innerHeight&&r.top-6-h>0?r.top-6-h:r.bottom+6)+"px";
+  (labPop.querySelector(".lp-opt.on")||labPop.querySelector(".lp-opt")).focus()}
+document.addEventListener("click",e=>{const b=e.target.closest("[data-lab-dd]");
+  if(b){e.preventDefault();const same=labPopFor===+b.dataset.labDd&&labPop&&!labPop.hidden;closeLabPop();if(!same)openLabPop(b);return}
+  const p=e.target.closest("[data-pick-lab]");if(p&&labPopFor){const id=labPopFor,labId=+p.dataset.pickLab;closeLabPop(true);if(labId!==chosen(id)?.lab_id)chooseLab(id,labId);return}
+  if(labPop&&!labPop.hidden&&!e.target.closest(".lab-pop"))closeLabPop()});
+document.addEventListener("keydown",e=>{if(!labPop||labPop.hidden)return;const opts=[...labPop.querySelectorAll(".lp-opt")],i=opts.indexOf(document.activeElement);
+  if(e.key==="Escape"){e.preventDefault();closeLabPop(true)}
+  else if(e.key==="ArrowDown"||e.key==="ArrowUp"){e.preventDefault();opts[(i+(e.key==="ArrowDown"?1:-1)+opts.length)%opts.length].focus()}
+  else if(e.key==="Tab")closeLabPop()});
+addEventListener("scroll",e=>{if(labPop&&!labPop.hidden&&!labPop.contains(e.target))closeLabPop()},true);addEventListener("resize",()=>closeLabPop());
+// "Includes 31 parameters": what a test measures at the chosen lab (lab_tests.parameters).
+const PARAM_ICON='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6h11M9 12h11M9 18h11"/><path d="m3.5 6 1 1 2-2M3.5 12l1 1 2-2M3.5 18l1 1 2-2"/></svg>';
+const paramChip=t=>t&&t.pcount?`<button type="button" class="param-chip" data-params="${t.id}" data-name="${esc(t.name)}">${PARAM_ICON}Includes ${t.pcount} parameter${t.pcount===1?"":"s"}</button>`:"";
+function showParams(id,name){const c=chosen(id);if(!c||!c.parameters)return;const groups=c.parameters,n=c.param_count||groups.reduce((s,g)=>s+g.p.length,0);
+  const body=openModal(name,`<div class="pm-head">${FLASK_ICON}<span><b>${n} parameter${n===1?"":"s"}</b> at ${esc(c.lab.name)}${c.turnaround?` · Report: ${esc(c.turnaround)}`:""}</span><b class="pm-price">${money(c.price)}</b></div>
+    ${n>12?'<input class="pm-search" placeholder="Search parameters…" aria-label="Search parameters">':""}
+    <div class="pm-groups">${groups.map(g=>`<section class="pm-group">${g.g?`<h4>${esc(g.g)}<span>${g.p.length}</span></h4>`:""}<ul>${g.p.map(p=>`<li>${esc(p)}</li>`).join("")}</ul></section>`).join("")}</div>
+    <p class="pm-note">Parameters can differ slightly between labs. Your report lists the exact values measured.</p>`);
+  const s=body.querySelector(".pm-search");if(s){s.addEventListener("input",()=>{const q=s.value.trim().toLowerCase();
+    body.querySelectorAll(".pm-group").forEach(g=>{let any=false;g.querySelectorAll("li").forEach(li=>{const ok=!q||li.textContent.toLowerCase().includes(q);li.hidden=!ok;any=any||ok});g.hidden=!any})});setTimeout(()=>s.focus(),50)}}
+document.addEventListener("click",e=>{const b=e.target.closest("[data-params]");if(!b)return;e.preventDefault();showParams(+b.dataset.params,b.dataset.name)});
+async function initLabPicker(){await labInit()}
+// Category look: an accent colour + icon for each kind of test (cards, rows, badges).
+const K_ICO={drop:'<path d="M12 2.7s6 6.4 6 11.1a6 6 0 0 1-12 0C6 9.1 12 2.7 12 2.7z"/>',
+  butterfly:'<path d="M12 7c-1.6-3.3-8-4-8 1.3 0 3.4 3 5.2 6.4 5.7M12 7c1.6-3.3 8-4 8 1.3 0 3.4-3 5.2-6.4 5.7M12 7v13"/><path d="M10.4 14c-2.7.8-4.4 2.5-3.4 4.2 1 1.6 3.3.6 5-1.2M13.6 14c2.7.8 4.4 2.5 3.4 4.2-1 1.6-3.3.6-5-1.2"/>',
+  pill:'<path d="m10.5 20.5 10-10a4.95 4.95 0 1 0-7-7l-10 10a4.95 4.95 0 1 0 7 7Z"/><path d="m8.5 8.5 7 7"/>',
+  bean:'<path d="M15.5 3.5c3 1.2 4.6 4.6 3.4 8.6-1.4 4.9-5.6 8.6-9.5 8.4-3.3-.2-5.3-3-4.1-6 .8-2 2.7-2.4 3.8-3.7 1.2-1.5.8-3.8 2.2-5.6 1.1-1.5 2.6-2.2 4.2-1.7z"/>',
+  sugar:'<rect x="4" y="4" width="16" height="16" rx="3"/><path d="M4 10h16M10 4v16"/>',
+  heart:'<path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/>',
+  tube:'<path d="M14.5 2v17.5a2.5 2.5 0 0 1-5 0V2M8.5 2h7M9.5 14h5"/>',
+  virus:'<circle cx="12" cy="12" r="5"/><path d="M12 2v5M12 17v5M2 12h5M17 12h5M4.9 4.9l3.5 3.5M15.6 15.6l3.5 3.5M4.9 19.1l3.5-3.5M15.6 8.4l3.5-3.5"/>',
+  dna:'<path d="M5 2c0 6 14 6 14 10S5 16 5 22M19 2c0 6-14 6-14 10s14 4 14 10M8 6h8M8 18h8M7 9.5h10M7 14.5h10"/>',
+  ribbon:'<path d="M12 3a4 4 0 0 0-4 4c0 3 4 7 4 7s4-4 4-7a4 4 0 0 0-4-4z"/><path d="m9.5 12.5-4 8.5 3-1 1.5 2.5 2-6M14.5 12.5l4 8.5-3-1-1.5 2.5-2-6"/>',
+  flower:'<circle cx="12" cy="12" r="3"/><path d="M12 9a3 3 0 1 1 3-3M15 12a3 3 0 1 1 3 3M12 15a3 3 0 1 1-3 3M9 12a3 3 0 1 1-3-3"/>',
+  micro:'<circle cx="7" cy="7" r="3"/><circle cx="17" cy="9" r="2"/><circle cx="12" cy="16" r="4"/>',
+  flask:'<path d="M9 3h6M10 3v6.5L4.6 18.4A1.7 1.7 0 0 0 6 21h12a1.7 1.7 0 0 0 1.4-2.6L14 9.5V3"/><path d="M7.5 15h9"/>'};
+const K_MAP=[[/blood|clot|haem|cbc/i,"k-red","drop"],[/thyroid/i,"k-purple","butterfly"],[/vitamin|mineral/i,"k-amber","pill"],
+  [/liver|kidney|pancrea/i,"k-teal","bean"],[/diabet/i,"k-orange","sugar"],[/heart|cholest|lipid/i,"k-pink","heart"],
+  [/urine|stool/i,"k-yellow","tube"],[/fever|infect|hepatitis|hiv|tuberc|culture|virus/i,"k-green","virus"],
+  [/hormon|pregnan|fertil|genetic/i,"k-violet","dna"],[/cancer/i,"k-indigo","ribbon"],[/allerg/i,"k-lime","flower"],[/cytolog|biops/i,"k-slate","micro"]];
+function catLook(cat){const m=K_MAP.find(([r])=>r.test(cat||""))||[0,"k-blue","flask"];
+  return{cls:m[1],ico:`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${K_ICO[m[2]]}</svg>`}}
 // ---------- tests + cart ----------
 let TESTS=[],CART_IDS=new Set();
 const CART_ICON='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>';
@@ -231,9 +326,9 @@ const addBtn=(id,inCart)=>inCart?`<button class="light addbtn added" data-add="$
 // Prep/fasting instruction line, shown wherever a test appears.
 const prepLine=txt=>txt?`<div class="prep-line"><b>Before the test:</b> ${esc(txt)}</div>`:"";
 function renderTests(filter="",cat="All"){const root=$("#testGrid");if(!root)return;
-  const list=TESTS.filter(t=>(t.name+" "+t.category).toLowerCase().includes(filter.toLowerCase())&&(cat==="All"||t.category===cat));
-  root.innerHTML=list.length?list.map(t=>`<article class="test"><div class="test-top"><div><h3>${esc(t.name)}</h3><small class="muted">${esc(t.category)} · ${esc(t.sample)} sample · ${esc(t.turnaround)}</small>${prepLine(t.instructions)}</div><div><div class="price">${money(t.price)}</div>${t.mrp>t.price?`<div class="mrp">MRP ${money(t.mrp)}</div>`:""}</div></div><div class="lab"><div><span>Report in ${esc(t.turnaround)} · Home collection</span></div>${addBtn(t.id,CART_IDS.has(t.id))}</div></article>`).join(""):`<div class="empty" style="grid-column:1/-1">Not in our popular tests. <a href="tests.html?q=${encodeURIComponent(filter)}"><b>Search all tests for “${esc(filter)}” →</b></a></div>`}
-async function initHome(){if(!$("#testGrid"))return;let{data,error}=await sb.from("tests").select("*").eq("active",true).eq("trending",true).order("id");
+  const list=TESTS.filter(t=>(!LAB.on||offered(t.id))&&(t.name+" "+t.category).toLowerCase().includes(filter.toLowerCase())&&(cat==="All"||t.category===cat)).map(withLab);
+  root.innerHTML=list.length?list.map(t=>t.avail===false?`<article class="test na"><div class="test-top"><div><h3>${esc(t.name)}</h3><small class="muted">${esc(t.category)} · ${esc(t.sample)} sample</small></div></div><div class="lab-miss"><span>No lab offers this test right now</span></div></article>`:`<article class="test tcard ${catLook(t.category).cls}"><span class="t-mark" aria-hidden="true">${catLook(t.category).ico}</span><div class="test-top"><div><span class="t-cat">${catLook(t.category).ico}${esc(t.category)}</span><h3>${esc(t.name)}</h3><small class="muted">${esc(t.sample)} sample · Report ${esc(t.turnaround).toLowerCase()==="same day"?"same day":"in "+esc(t.turnaround)}</small>${paramChip(t)}${prepLine(t.instructions)}</div><div><div class="price">${money(t.price)}</div>${t.mrp>t.price?`<div class="mrp">MRP ${money(t.mrp)}</div>`:""}</div></div>${labSelect(t)}<div class="lab"><div><span>🏠 Home sample collection</span></div>${addBtn(t.id,CART_IDS.has(t.id))}</div></article>`).join(""):`<div class="empty" style="grid-column:1/-1">Not in our popular tests. <a href="tests.html?q=${encodeURIComponent(filter)}"><b>Search all tests for “${esc(filter)}” →</b></a></div>`}
+async function initHome(){if(!$("#testGrid"))return;await labInit();let{data,error}=await sb.from("tests").select("*").eq("active",true).eq("trending",true).order("id");
   if(error&&/trending/.test(error.message))({data,error}=await sb.from("tests").select("*").eq("active",true).order("id"));if(error)return fail(error);TESTS=data;
   sb.from("tests").select("id",{count:"exact",head:true}).eq("active",true).then(({count})=>{if(count>TESTS.length)document.querySelectorAll("[data-total-tests]").forEach(el=>el.textContent=count)});
   const c=await me();if(c){const{data:ci}=await sb.from("cart_items").select("test_id");CART_IDS=new Set((ci||[]).map(x=>x.test_id))}
@@ -241,12 +336,16 @@ async function initHome(){if(!$("#testGrid"))return;let{data,error}=await sb.fro
   const cur=()=>$(".chip.active")?.dataset.cat||"All";
   $("#searchInput").addEventListener("input",e=>renderTests(e.target.value,cur()));
   document.querySelectorAll(".chip").forEach(c=>c.addEventListener("click",()=>{document.querySelectorAll(".chip").forEach(x=>x.classList.remove("active"));c.classList.add("active");renderTests($("#searchInput").value,c.dataset.cat)}));
-  bindAddToCart($("#testGrid"),"index.html")}
+  bindAddToCart($("#testGrid"),"index.html");
+  const labCount=()=>{if(LAB.on)document.querySelectorAll("[data-total-tests]").forEach(el=>el.textContent=LAB.by.size)};labCount();
+  document.addEventListener("lm-lab",()=>{labCount();renderTests($("#searchInput").value,$(".chip.active")?.dataset.cat||"All")})}
 // Add-to-cart buttons ([data-add]) inside any container. Used by the home page and the All tests page.
 function bindAddToCart(box,next,onAdd){box.addEventListener("click",async e=>{const b=e.target.closest("[data-add]");if(!b||b.classList.contains("added"))return;
   const c=await me();if(!c){location.href="login.html?next="+encodeURIComponent(next);return}
   const id=+b.dataset.add;b.disabled=true;b.classList.add("pop");
-  const{error}=await sb.from("cart_items").upsert({user_id:c.user.id,test_id:id},{onConflict:"user_id,test_id",ignoreDuplicates:true});
+  await labInit();const row={user_id:c.user.id,test_id:id};if(LAB.on&&LAB.cartLab&&chosen(id))row.lab_id=chosen(id).lab_id;
+  let{error}=await sb.from("cart_items").upsert(row,{onConflict:"user_id,test_id",ignoreDuplicates:true});
+  if(error&&row.lab_id&&/lab_id/.test(error.message)){LAB.cartLab=false;delete row.lab_id;({error}=await sb.from("cart_items").upsert(row,{onConflict:"user_id,test_id",ignoreDuplicates:true}))}
   if(error){b.disabled=false;b.classList.remove("pop");return fail(error)}
   CART_IDS.add(id);b.classList.add("added");b.innerHTML=`${CHECK_ICON}<span>In cart</span>`;
   toast("Added to cart");initNav();onAdd&&onAdd()})}
@@ -266,9 +365,13 @@ async function initCatalog(){const list=$("#catList");if(!list)return;
   const P=new URLSearchParams(location.search);
   const st={q:P.get("q")||"",cat:P.get("cat")||"",samples:new Set(),price:"any",tat:"any",letter:"",sort:"popular",shown:30};
   list.innerHTML='<div class="cat-skel"></div>'.repeat(6);
-  const{data,error}=await sb.from("tests").select("*").eq("active",true).order("name");if(error){list.innerHTML="";return fail(error)}
-  const all=data.map(t=>{const n=catNorm(`${t.name} ${t.category} ${t.sample}`);return{...t,hay:n+" "+n.replace(/ /g,""),first:/^[a-z]/i.test(t.name.trim())?t.name.trim()[0].toUpperCase():"#",tat:t.tat_minutes??tatGuess(t.turnaround)}});
-  TESTS=all;const c=await me();if(c){const{data:ci}=await sb.from("cart_items").select("test_id");CART_IDS=new Set((ci||[]).map(x=>x.test_id))}
+  let data;try{data=await fetchAll(()=>sb.from("tests").select("*").eq("active",true).order("name").order("id"))}catch(error){list.innerHTML="";return fail(error)}
+  await labInit();const raw=data.filter(t=>!LAB.on||offered(t.id));
+  const prepT=t=>{const n=catNorm(`${t.name} ${t.category} ${t.sample}`);return{...t,hay:n+" "+n.replace(/ /g,""),first:/^[a-z]/i.test(t.name.trim())?t.name.trim()[0].toUpperCase():"#",tat:t.tat_minutes??tatGuess(t.turnaround)}};
+  let all=[];const rebuild=()=>{all=raw.map(withLab).filter(t=>t.avail!==false).map(prepT);TESTS=all;
+    $("#catTotal").textContent=all.length;$("#catSearch").placeholder=`Search ${all.length} tests by name, organ or condition…`;
+    const n=LAB.list.filter(l=>l.count).length,ln=$("#catLabName");if(ln)ln.textContent=LAB.on&&n>1?` from ${n} labs`:""};rebuild();
+  TESTS=all;const c=await me();if(c){const ci=await getCart().catch(()=>[]);CART_IDS=new Set(ci.map(x=>x.id))}
   $("#catSearch").placeholder=`Search ${all.length} tests by name, organ or condition…`;$("#catSearch").value=st.q;
   $("#catTotal").textContent=all.length;
   function tatGuess(s){s=String(s||"").toLowerCase();const n=parseFloat(s)||1;return/same/.test(s)?360:/hour/.test(s)?n*60:/day/.test(s)?n*1440:1440}
@@ -280,8 +383,8 @@ async function initCatalog(){const list=$("#catList");if(!list)return;
   let W=[];const pass=(t,skip)=>{return(skip==="q"||matchQ(t,W))&&(skip==="cat"||!st.cat||t.category===st.cat)&&(skip==="sample"||!st.samples.size||st.samples.has(t.sample))&&(skip==="price"||inPrice(t))&&(skip==="tat"||inTat(t))&&(skip==="letter"||!st.letter||t.first===st.letter)};
   const sorters={popular:(a,b)=>(b.trending-a.trending)||a.name.localeCompare(b.name),az:(a,b)=>a.name.localeCompare(b.name),low:(a,b)=>a.price-b.price||a.name.localeCompare(b.name),high:(a,b)=>b.price-a.price||a.name.localeCompare(b.name),fast:(a,b)=>a.tat-b.tat||a.name.localeCompare(b.name)};
   const counts=(skip,key)=>{const m={};all.forEach(t=>{if(pass(t,skip)){const k=key(t);m[k]=(m[k]||0)+1}});return m};
-  const cats=[...new Set(all.map(t=>t.category))].sort((a,b)=>a==="Other tests"?1:b==="Other tests"?-1:a.localeCompare(b));
-  const samples=Object.entries(all.reduce((m,t)=>(m[t.sample]=(m[t.sample]||0)+1,m),{})).sort((a,b)=>b[1]-a[1]).map(([s])=>s);
+  const cats=[...new Set(raw.map(t=>t.category))].sort((a,b)=>a==="Other tests"?1:b==="Other tests"?-1:a.localeCompare(b));
+  const samples=Object.entries(raw.reduce((m,t)=>(m[t.sample]=(m[t.sample]||0)+1,m),{})).sort((a,b)=>b[1]-a[1]).map(([s])=>s);
   const QUICK=["Thyroid","Diabetes","Fever (Dengue, Malaria, Typhoid)","Vitamins & Minerals","Heart & Cholesterol","Liver & Pancreas","Kidney","Hormones","Pregnancy & Fertility","Allergy"].filter(c=>cats.includes(c));
   const short=c=>c.replace(/ \(.*\)/,"");
   function drawSide(){const cc=counts("cat",t=>t.category),sc=counts("sample",t=>t.sample),total=all.filter(t=>pass(t,"cat")).length;
@@ -301,17 +404,17 @@ async function initCatalog(){const list=$("#catList");if(!list)return;
     $("#catActive").innerHTML=chips.length?chips.map(([k,l])=>`<button type="button" class="cat-chip" data-clear="${esc(k)}">${esc(l)}${CAT_ICO.x}</button>`).join("")+`<button type="button" class="cs-link" data-clear="all">Clear all</button>`:"";
     const n=chips.length-(st.q?1:0);$("#catFilterBtn").innerHTML=`${CAT_ICO.filter}Filters${n?` <b>${n}</b>`:""}`;
     document.querySelectorAll("[data-quick]").forEach(b=>b.classList.toggle("on",b.dataset.quick===st.cat))}
-  const row=t=>`<article class="cat-row"><div class="cat-main"><h3>${esc(t.name)}${t.trending?`<span class="cat-pop">${CAT_ICO.star}Popular</span>`:""}</h3>
-      <div class="cat-meta"><button type="button" class="cat-tag" data-cat="${esc(t.category)}">${esc(t.category)}</button><span>${CAT_ICO.drop}${esc(t.sample)} sample</span><span>${CAT_ICO.clock}Report: ${esc(t.turnaround)}</span></div>${prepLine(t.instructions)}</div>
-    <div class="cat-buy"><div class="cat-price"><b>${money(t.price)}</b>${t.mrp>t.price?`<s>${money(t.mrp)}</s><em>${Math.round((1-t.price/t.mrp)*100)}% off</em>`:""}</div>${addBtn(t.id,CART_IDS.has(t.id))}</div></article>`;
-  function draw(keepShown){if(!keepShown)st.shown=30;W=words(st.q);const res=all.filter(t=>pass(t)).sort(sorters[st.sort]);
+  const row=t=>`<article class="cat-row ${catLook(t.category).cls}"><span class="t-mark" aria-hidden="true">${catLook(t.category).ico}</span><div class="cat-main"><h3>${esc(t.name)}${t.trending?`<span class="cat-pop">${CAT_ICO.star}Popular</span>`:""}</h3>
+      <div class="cat-meta"><button type="button" class="cat-tag" data-cat="${esc(t.category)}">${catLook(t.category).ico}${esc(t.category)}</button><span>${CAT_ICO.drop}${esc(t.sample)} sample</span><span>${CAT_ICO.clock}Report: ${esc(t.turnaround)}</span>${paramChip(t)}</div>${prepLine(t.instructions)}</div>
+    <div class="cat-buy"><div class="cat-price"><b>${money(t.price)}</b>${t.mrp>t.price?`<s>${money(t.mrp)}</s><em>${Math.round((1-t.price/t.mrp)*100)}% off</em>`:""}</div>${labSelect(t)}${addBtn(t.id,CART_IDS.has(t.id))}</div></article>`;
+  function draw(keepShown){if(!keepShown)st.shown=30;W=words(st.q);rebuild();const res=all.filter(t=>pass(t)).sort(sorters[st.sort]);
     $("#catCount").innerHTML=`<b>${res.length}</b> ${res.length===1?"test":"tests"}${st.cat?` in ${esc(short(st.cat))}`:""}`;
     list.innerHTML=res.length?res.slice(0,st.shown).map(row).join(""):`<div class="cat-empty"><b>No tests match${st.q?` “${esc(st.q)}”`:" these filters"}.</b><span>Try a different spelling or fewer filters. Can't find your test? Call us and we'll check if the lab can do it.</span>
       <div class="cat-empty-acts"><button type="button" class="light" data-clear="all">Clear filters</button>${typeof BUSINESS!=="undefined"&&BUSINESS.phone?`<a class="btn green" href="tel:${BUSINESS.phone.replace(/\s/g,"")}">Call the lab</a>`:""}</div></div>`;
     const more=$("#catMore");more.hidden=res.length<=st.shown;more.textContent=`Show more tests (${Math.min(st.shown,res.length)} of ${res.length})`;
     drawSide();drawAZ();drawActive();
     const u=new URL(location.href);u.searchParams.delete("q");u.searchParams.delete("cat");if(st.q)u.searchParams.set("q",st.q);if(st.cat)u.searchParams.set("cat",st.cat);history.replaceState(null,"",u)}
-  function drawCartBar(){const n=CART_IDS.size,bar=$("#catCartBar");bar.hidden=!n;bar.querySelector("span").textContent=`${n} ${n===1?"test":"tests"} in your cart`}
+  function drawCartBar(){} // the site-wide "Proceed to cart" bar already shows the cart
   // quick category chips in the hero
   $("#catQuick").innerHTML=QUICK.map(c=>`<button type="button" data-quick="${esc(c)}">${esc(short(c))}</button>`).join("");
   $("#catSort").innerHTML=CAT_SORTS.map(([k,l])=>`<option value="${k}">${l}</option>`).join("");
@@ -335,12 +438,27 @@ async function initCatalog(){const list=$("#catList");if(!list)return;
   document.addEventListener("keydown",e=>{if(e.key==="Escape")document.body.classList.remove("cat-filters-open");
     if(e.key==="/"&&!/input|textarea|select/i.test(document.activeElement.tagName)){e.preventDefault();$("#catSearch").focus()}});
   bindAddToCart(list,"tests.html"+location.search,drawCartBar);
+  document.addEventListener("lm-lab",()=>{rebuild();draw()});
   draw();drawCartBar()}
-const getCart=async()=>{const{data,error}=await sb.from("cart_items").select("test_id,tests(*)");if(error)throw error;return data.map(r=>r.tests)};
+const getCart=async()=>{await labInit();let{data,error}=await sb.from("cart_items").select("test_id,lab_id,tests(*)");
+  if(error&&/lab_id/.test(error.message)){LAB.cartLab=false;({data,error}=await sb.from("cart_items").select("test_id,tests(*)"))}if(error)throw error;
+  // The cart's lab choice wins; if it changed what's on screen, redraw prices (fires once, no loop).
+  let changed=false;data.forEach(r=>{if(r.lab_id&&+LAB.pick[r.test_id]!==r.lab_id){LAB.pick[r.test_id]=r.lab_id;changed=true}});
+  if(changed){try{localStorage.setItem("lm_testlab",JSON.stringify(LAB.pick))}catch(_){}document.dispatchEvent(new CustomEvent("lm-lab"))}
+  return data.map(r=>withLab(r.tests)).filter(Boolean)};
+// One lab id when every test uses the same lab (older booking function needs it), else null.
+const sameLab=items=>{const ids=[...new Set(items.map(t=>t.lab?.id).filter(Boolean))];return ids.length===1?ids[0]:null};
+// "CBC · Hypatho Lab" style label for booked tests.
+const itemLab=i=>i.lab_name?` <small class="item-lab">· ${esc(i.lab_name)}</small>`:"";
 async function initCart(){const root=$("#cartItems");if(!root||!await guard())return;
-  const draw=async()=>{const items=await getCart();const total=items.reduce((s,t)=>s+t.price,0),mrp=items.reduce((s,t)=>s+t.mrp,0);
-    root.innerHTML=items.length?items.map(t=>`<div class="test" style="margin-bottom:10px"><div class="test-top"><div><h3>${esc(t.name)}</h3><small class="muted">Report in ${esc(t.turnaround)}</small>${prepLine(t.instructions)}</div><div><div class="price">${money(t.price)}</div><button class="light" data-rm="${t.id}" style="margin-top:6px;padding:6px 10px;font-size:12px">Remove</button></div></div></div>`).join(""):`<div class="empty">Your cart is empty. <a href="index.html#tests"><b>Browse tests</b></a></div>`;
-    $("#cartTotal").innerHTML=items.length?`<div class="mrp" style="text-align:left">MRP ${money(mrp)} · You save ${money(mrp-total)}</div><div style="display:flex;justify-content:space-between;align-items:center;margin:8px 0 16px"><b>Total</b><span class="price">${money(total)}</span></div><a class="btn green" style="width:100%" href="booking.html">Proceed to booking</a>`:"";initNav()};
+  const draw=async()=>{const items=await getCart(),ok=items.filter(t=>t.avail!==false),miss=items.filter(t=>t.avail===false);
+    const total=ok.reduce((s,t)=>s+t.price,0),mrp=ok.reduce((s,t)=>s+(t.mrp||t.price),0);
+    const rm=id=>`<button class="light" data-rm="${id}" style="margin-top:6px;padding:6px 10px;font-size:12px">Remove</button>`;
+    const labs=[...new Set(ok.map(t=>t.lab?.name).filter(Boolean))];
+    root.innerHTML=(items.length?items.map(t=>t.avail===false?`<div class="test na" style="margin-bottom:10px"><div class="test-top"><div><h3>${esc(t.name)}</h3><small class="muted">No lab offers this test right now</small></div><div>${rm(t.id)}</div></div></div>`
+        :`<div class="test" style="margin-bottom:10px"><div class="test-top"><div><h3>${esc(t.name)}</h3><small class="muted">Report in ${esc(t.turnaround)}</small>${paramChip(t)}${prepLine(t.instructions)}</div><div><div class="price">${money(t.price)}</div>${rm(t.id)}</div></div>${labSelect(t)}</div>`).join(""):`<div class="empty">Your cart is empty. <a href="tests.html"><b>Browse tests</b></a></div>`);
+    $("#cartTotal").innerHTML=items.length?`${mrp>total?`<div class="mrp" style="text-align:left">MRP ${money(mrp)} · You save ${money(mrp-total)}</div>`:""}${labs.length>1?`<div class="cart-lab">${FLASK_ICON}<span>Samples go to <b>${labs.length} labs</b>: ${esc(labs.join(", "))}</span><small>One home visit collects everything</small></div>`:""}${miss.length?`<div class="notice warn-notice">Remove the test${miss.length>1?"s":""} no lab offers to continue.</div>`:""}<div style="display:flex;justify-content:space-between;align-items:center;margin:8px 0 16px"><b>Total</b><span class="price">${money(total)}</span></div>${miss.length?'<button class="btn green" style="width:100%" disabled>Proceed to booking</button>':'<a class="btn green" style="width:100%" href="booking.html">Proceed to booking</a>'}`:"";initNav()};
+  document.addEventListener("lm-lab",()=>draw().catch(fail));
   root.addEventListener("click",async e=>{const b=e.target.closest("[data-rm]");if(!b)return;const{error}=await sb.from("cart_items").delete().eq("test_id",+b.dataset.rm);if(error)return fail(error);draw()});draw().catch(fail)}
 
 // ---------- saved addresses (used on the booking page) ----------
@@ -458,8 +576,13 @@ async function initBooking(){const f=$("#bookingForm");if(!f)return;const c=awai
   f.date.min=today();f.name.value=c.profile.full_name||"";f.phone.value=c.profile.phone||"";
   const who=memberPicker(f,c);
   const items=await getCart().catch(e=>(fail(e),[]));
-  if(!items.length){$("#selectedTest").innerHTML='<div class="notice">Your cart is empty. <a href="index.html#tests">Browse tests</a>.</div>';f.hidden=true;return}
+  if(!items.length){$("#selectedTest").innerHTML='<div class="notice">Your cart is empty. <a href="tests.html">Browse tests</a>.</div>';f.hidden=true;return}
+  const miss=items.filter(t=>t.avail===false);document.addEventListener("lm-lab",()=>location.reload());
   $("#selectedTest").innerHTML=items.map(t=>`<div class="test" style="margin-bottom:8px"><div class="test-top"><div><b>${esc(t.name)}</b><div class="muted" style="font-size:13px;margin-top:5px">Report in ${esc(t.turnaround)} · Home collection</div></div><div class="price" style="font-size:19px">${money(t.price)}</div></div></div>`).join("")+`<div style="display:flex;justify-content:space-between"><b>Total</b><span class="price">${money(items.reduce((s,t)=>s+t.price,0))}</span></div>`;
+  if(LAB.on){const labs=[...new Set(items.map(t=>t.lab?.name).filter(Boolean))];
+    $("#selectedTest").querySelectorAll(".test").forEach((el,i)=>{const t=items[i];if(t?.lab)el.querySelector(".muted")?.insertAdjacentHTML("afterbegin",`<span class="item-lab-b">${FLASK_ICON}${esc(t.lab.name)}</span> · `)});
+    if(labs.length)$("#selectedTest").insertAdjacentHTML("afterbegin",`<div class="cart-lab">${FLASK_ICON}<span>${labs.length>1?`Samples go to <b>${labs.length} labs</b>: ${esc(labs.join(", "))}`:`Lab: <b>${esc(labs[0])}</b>`}</span><small>One home visit collects everything</small></div>`);
+    if(miss.length){$("#selectedTest").insertAdjacentHTML("beforeend",`<div class="notice warn-notice" style="margin-top:10px">${esc(miss.map(t=>t.name).join(", "))}: no lab offers ${miss.length===1?"this test":"these tests"} right now. <a href="cart.html"><b>Go to cart</b></a> to remove ${miss.length===1?"it":"them"}.</div>`);$("#confirmBtn").disabled=true}}
   // Prep / fasting instructions for everything in the cart.
   const prep=items.filter(t=>t.instructions);
   $("#prepNotice").innerHTML=prep.length?`<div class="prep-notice"><b>Before your sample collection</b><ul>${prep.map(t=>`<li><b>${esc(t.name)}:</b> ${esc(t.instructions)}</li>`).join("")}</ul></div>`:"";
@@ -494,7 +617,7 @@ async function initBooking(){const f=$("#bookingForm");if(!f)return;const c=awai
         if(!area||!address){toast("Please enter the collection address");b.disabled=false;return}
         saveNew=f.saveAddr.checked}
       const method=f.paymethod.value;
-      const{data,error}=await sb.rpc("place_booking",{p_name:f.name.value.trim(),p_phone:f.phone.value.trim(),p_date:f.date.value,p_slot:f.slot.value,p_area:area,p_address:address,p_payment_method:method,p_age:+f.age.value,p_age_unit:f.ageUnit.value,p_gender:f.gender.value,p_consent:f.consent.checked,p_member_id:who.selected()});
+      const{data,error}=await sb.rpc("place_booking",{p_name:f.name.value.trim(),p_phone:f.phone.value.trim(),p_date:f.date.value,p_slot:f.slot.value,p_area:area,p_address:address,p_payment_method:method,p_age:+f.age.value,p_age_unit:f.ageUnit.value,p_gender:f.gender.value,p_consent:f.consent.checked,p_member_id:who.selected(),...(LAB.on?{p_lab_id:sameLab(items)}:{})});
       if(error){fail(error);b.disabled=false;updateSlots();return}
       await who.syncSelf();
       if(saveNew)await sb.from("addresses").insert({label:f.addrLabel.value.trim()||null,area,address,lat:f.dataset.lat?+f.dataset.lat:null,lng:f.dataset.lng?+f.dataset.lng:null});
@@ -659,7 +782,7 @@ function adminLive(){const rowsEl=$("#liveRows");if(!rowsEl)return;let trips=[],
 async function initAccount(){const root=$("#myBookings");if(!root||!await guard())return;
   const n=new URLSearchParams(location.search).get("new");if(n)$("#newMsg").innerHTML=`<div class="notice">Booking <b>${esc(n)}</b> confirmed. Our staff will visit at your selected slot.</div>`;
   let byId={};const track=patientTracking(root,()=>load());
-  const load=async()=>{const{data,error}=await sb.from("bookings").select("*,booking_items(name,price,instructions),reports(id,path,created_at)").order("created_at",{ascending:false});if(error)return fail(error);
+  const load=async()=>{const{data,error}=await sb.from("bookings").select("*,booking_items(*),reports(id,path,created_at)").order("created_at",{ascending:false});if(error)return fail(error);
   byId=Object.fromEntries(data.map(b=>[b.id,b]));
   root.innerHTML=data.length?data.map(b=>{const sm=statusMeta(b.status);
     return`<section class="job bk" data-status="${sm.cls}"><div class="jobhead"><span class="bk-ref">${esc(b.ref)}</span><span class="pill ${sm.cls}">${esc(b.status)}</span></div>
@@ -668,8 +791,9 @@ async function initAccount(){const root=$("#myBookings");if(!root||!await guard(
     <div class="bk-meta">
       <div class="bk-row">${ICONS.cal}<span>${fmt(b.collect_date)} · ${esc(b.slot)}</span></div>
       <div class="bk-row">${ICONS.pin}<span>${esc(b.address)}, ${esc(b.area)}</span></div>
+      ${b.lab_name?`<div class="bk-row">${FLASK_ICON}<span>Lab: ${esc(b.lab_name)}</span></div>`:""}
     </div>
-    <div class="tests">${b.booking_items.map(i=>`<span class="test-chip">${esc(i.name)}</span>`).join("")}</div>
+    <div class="tests">${b.booking_items.map(i=>`<span class="test-chip">${esc(i.name)}${itemLab(i)}</span>`).join("")}</div>
     ${["Confirmed","Assigned"].includes(b.status)?b.booking_items.filter(i=>i.instructions).map(i=>prepLine(`${i.name}: ${i.instructions}`)).join(""):""}
     ${b.status==="Cancelled"&&b.cancel_reason?`<div class="muted" style="font-size:12.5px;margin-top:8px">Cancelled: ${esc(b.cancel_reason)}</div>`:""}
     <div class="bk-foot">
@@ -693,7 +817,7 @@ async function initAccount(){const root=$("#myBookings");if(!root||!await guard(
 async function initReceipt(){const root=$("#receipt");if(!root)return;const c=await guard();if(!c)return;
   const id=new URLSearchParams(location.search).get("id");if(!id){root.innerHTML='<p class="muted">No booking selected.</p>';return}
   if(c.profile.role!=="patient")$(".receipt-tools a").href=c.profile.role==="admin"?"98991/admin/dashboard.html#bookings":"staff/dashboard.html";
-  const{data:b,error}=await sb.from("bookings").select("*,booking_items(name,price)").eq("id",id).maybeSingle();
+  const{data:b,error}=await sb.from("bookings").select("*,booking_items(*)").eq("id",id).maybeSingle();
   if(error||!b){root.innerHTML='<p class="muted">Booking not found, or you don\'t have access to it.</p>';return}
   const paid=b.payment==="Paid"||b.payment==="Refunded";
   const title=b.payment==="Refunded"?"Receipt · Refunded":paid?"Payment Receipt":b.status==="Cancelled"?"Cancelled Booking":"Booking Summary";
@@ -705,10 +829,10 @@ async function initReceipt(){const root=$("#receipt");if(!root)return;const c=aw
     ${b.status==="Cancelled"?`<div class="rc-stamp">CANCELLED${b.cancelled_at?" · "+fmt(b.cancelled_at):""}</div>`:""}
     <section class="rc-grid">
       <div><h3>Patient</h3>${row("Name",esc(b.patient_name))}${row("Age / Gender",b.patient_age!=null?`${ageText(b.patient_age,b.patient_age_unit,true)} · ${esc(b.patient_gender||"")}`:"")}${row("Phone",esc(b.phone))}${row("Address",`${esc(b.address)}, ${esc(b.area)}`)}</div>
-      <div><h3>Booking</h3>${row("Booked on",fmt(b.created_at))}${row("Collection",`${fmt(b.collect_date)} · ${esc(b.slot)}`)}${row("Sample ID",esc(b.sample_id||""))}${row("Status",esc(b.status))}</div>
+      <div><h3>Booking</h3>${row("Booked on",fmt(b.created_at))}${row("Collection",`${fmt(b.collect_date)} · ${esc(b.slot)}`)}${row("Sample ID",esc(b.sample_id||""))}${b.lab_name?row("Lab",esc(b.lab_name)):""}${row("Status",esc(b.status))}</div>
     </section>
     <table class="rc-items"><thead><tr><th>#</th><th>Test</th><th style="text-align:right">Amount</th></tr></thead>
-      <tbody>${b.booking_items.map((i,n)=>`<tr><td>${n+1}</td><td>${esc(i.name)}</td><td style="text-align:right">${money(i.price)}</td></tr>`).join("")}</tbody>
+      <tbody>${b.booking_items.map((i,n)=>`<tr><td>${n+1}</td><td>${esc(i.name)}${itemLab(i)}</td><td style="text-align:right">${money(i.price)}</td></tr>`).join("")}</tbody>
       <tfoot><tr><td></td><td>Total${BUSINESS.gstin?" (incl. taxes, if any)":""}</td><td style="text-align:right">${money(b.total)}</td></tr></tfoot></table>
     <section class="rc-pay"><h3>Payment</h3>${row("Status",esc(payLabel(b)))}${row("Method",b.payment_method==="Online"?"Online (Razorpay)":"Cash on collection")}
       ${row("Payment ID",esc(b.razorpay_payment_id||""))}${row("Paid on",b.collected_at&&b.payment_method==="Cash"?fmt(b.collected_at):"")}${row("Refund ID",esc(b.refund_id||""))}
@@ -751,10 +875,10 @@ const STATUSES=["Confirmed","Assigned","Sample collected","Handed over to lab","
 const PAYMENTS=["Pending","Paid","Refund pending","Refunded"],PAY_CLS={Paid:"green",Pending:"amber","Refund pending":"red"};
 const opts=(arr,cur)=>arr.map(v=>`<option${v===cur?" selected":""}>${esc(v)}</option>`).join("");
 const bookingRowHTML=b=>`<tr data-id="${b.id}">
-  <td><span class="bk-ref">${esc(b.ref)}</span>${b.sample_id?`<div class="sample-tag">Sample ${esc(b.sample_id)}</div>`:""}
+  <td><span class="bk-ref">${esc(b.ref)}</span>${b.sample_id?`<div class="sample-tag">Sample ${esc(b.sample_id)}</div>`:""}${b.lab_name?`<div class="lab-tag">${FLASK_ICON}${esc(b.lab_name)}</div>`:""}
     <div class="row-links"><a href="#" data-timeline="${b.id}" data-ref="${esc(b.ref)}">Timeline</a><a href="../../receipt.html?id=${b.id}" target="_blank">Receipt</a>${["Confirmed","Assigned"].includes(b.status)?`<a href="#" data-resched="${b.id}">Reschedule</a>`:""}</div></td>
   <td><b>${esc(b.patient_name)}</b><br><small class="muted">${b.patient_age!=null?`${ageText(b.patient_age,b.patient_age_unit)} · ${esc(b.patient_gender||"")} · `:""}${esc(b.phone)}</small></td>
-  <td><div class="cell-tests">${b.booking_items.map(i=>`<span class="test-chip">${esc(i.name)}</span>`).join("")}</div></td>
+  <td><div class="cell-tests">${b.booking_items.map(i=>`<span class="test-chip">${esc(i.name)}${itemLab(i)}</span>`).join("")}</div></td>
   <td>${fmt(b.collect_date)}<br><small class="muted">${esc(b.slot)}</small></td>
   <td><b>${money(b.total)}</b></td>
   <td><select data-f="status" class="cell-select ${statusMeta(b.status).cls}">${opts(STATUSES,b.status)}</select></td>
@@ -763,7 +887,7 @@ const bookingRowHTML=b=>`<tr data-id="${b.id}">
 // Loads all bookings and calls onRows again whenever ANY dashboard changes a booking or
 // uploads a report (Supabase Realtime). Returns a function to force a reload.
 function liveBookings(onRows){
-  const load=async()=>{const{data:rows,error}=await sb.from("bookings").select("*,booking_items(name,instructions),reports(id,path)").order("created_at",{ascending:false});
+  const load=async()=>{const{data:rows,error}=await sb.from("bookings").select("*,booking_items(*),reports(id,path)").order("created_at",{ascending:false});
     if(error)return fail(error);onRows(rows)};
   let t;const refresh=()=>{clearTimeout(t);t=setTimeout(load,300)};
   sb.channel("bookings-live").on("postgres_changes",{event:"*",schema:"public",table:"bookings"},refresh)
@@ -1174,6 +1298,66 @@ function topScroll(bar,wrap){if(!bar||!wrap)return;const inner=bar.firstElementC
   bar.addEventListener("scroll",sync(bar,wrap));wrap.addEventListener("scroll",sync(wrap,bar));
   const ro=new ResizeObserver(size);ro.observe(wrap);if(wrap.firstElementChild)ro.observe(wrap.firstElementChild);
   new MutationObserver(size).observe(wrap,{childList:true,subtree:true});size()}
+// Price rule: a website price ending in 0 drops by Rs 1 (350 -> 349); anything else stays the same.
+const nine=p=>p>0&&p%10===0?p-1:Math.max(0,p);
+// Admin: Labs tab (v2). The 7 labs, each lab's price list, recommended lab, on/off.
+function adminLabs(){const box=$("#labCards");if(!box)return;
+  let labs=[],sel=null,rows=[],limit=100,masters=null;
+  const panel=$("#labPanel");
+  async function load(){const{data,error}=await sb.from("labs").select("*").order("sort");
+    if(error){box.innerHTML='<div class="notice">Labs are not set up yet. Run <b>supabase/labs_v2.sql</b> once in the Supabase SQL Editor, then refresh.</div>';panel.hidden=true;return}
+    let lt=[];try{lt=await fetchAll(()=>sb.from("lab_tests").select("lab_id,active").order("id"))}catch(e){fail(e)}
+    const c={};lt.forEach(r=>{if(r.active)c[r.lab_id]=(c[r.lab_id]||0)+1});labs=data.map(l=>({...l,count:c[l.id]||0}));drawCards()}
+  function drawCards(){box.innerHTML=labs.map(l=>`<article class="lab-card${sel&&sel.id===l.id?" on":""}${l.active?"":" off"}" data-lab="${l.id}">
+      <div class="lc-top"><span class="lc-ico">${FLASK_ICON}</span><div><b>${esc(l.name)}</b>${l.recommended?'<span class="pill green">Recommended</span>':""}</div></div>
+      <div class="lc-count">${l.count?`<b>${l.count}</b> tests`:'<span class="muted">No price list yet</span>'}</div>
+      <div class="lc-acts"><button type="button" class="light sm" data-lc="open">Price list</button>
+        ${l.recommended?"":`<button type="button" class="light sm" data-lc="rec">Make recommended</button>`}
+        <label class="lc-switch" title="Show this lab to patients"><input type="checkbox" data-lc="active"${l.active?" checked":""}><span>${l.active?"Shown":"Hidden"}</span></label></div></article>`).join("")}
+  async function open(l){sel=l;limit=100;drawCards();panel.hidden=false;$("#labPanelTitle").textContent=`${l.name}: price list`;
+    $("#ltRows").innerHTML='<tr><td colspan="7" class="muted">Loading…</td></tr>';
+    try{rows=await fetchAll(()=>sb.from("lab_tests").select("id,test_id,lab_code,lab_name,website_price,price,turnaround,active,tests(name,category)").eq("lab_id",l.id).order("id"))}catch(e){return fail(e)}
+    drawRows();panel.scrollIntoView({behavior:"smooth",block:"start"})}
+  function drawRows(){const q=catNorm($("#ltSearch").value),list=rows.filter(r=>!q||catNorm(`${r.tests?.name} ${r.lab_name} ${r.lab_code} ${r.tests?.category}`).includes(q));
+    $("#ltCount").textContent=`${list.length} of ${rows.length} tests`;
+    $("#ltRows").innerHTML=list.length?list.slice(0,limit).map(r=>`<tr data-lt="${r.id}"><td class="muted">${esc(r.lab_code||"—")}</td>
+        <td><b>${esc(r.tests?.name||"")}</b>${r.lab_name&&r.lab_name!==r.tests?.name?`<small class="muted tp-code">Lab's name: ${esc(r.lab_name)}</small>`:""}<small class="muted tp-code">${esc(r.tests?.category||"")}</small></td>
+        <td><input name="web" type="number" min="0" value="${r.website_price??""}" style="width:100px" title="Price on the lab's website"></td>
+        <td><input name="price" type="number" min="0" value="${r.price}" style="width:100px" title="LabMitra price (website price - 1)"></td>
+        <td><input name="tat" value="${esc(r.turnaround||"")}" style="width:110px"></td>
+        <td class="tp-tick"><input name="active" type="checkbox" style="width:auto"${r.active?" checked":""}></td>
+        <td><button type="button" class="green sm" data-lt-save>Save</button></td></tr>`).join("")
+      +(list.length>limit?`<tr><td colspan="7"><button type="button" class="light" id="ltMore">Show ${Math.min(100,list.length-limit)} more (${limit} of ${list.length} shown)</button></td></tr>`:"")
+      :`<tr><td colspan="7" class="muted">${rows.length?"No tests match.":"This lab has no tests yet. Add them below, or send the lab's price list (PDF or Excel) for a bulk import."}</td></tr>`}
+  // events
+  box.addEventListener("click",async e=>{const card=e.target.closest("[data-lab]");if(!card)return;const l=labs.find(x=>x.id===+card.dataset.lab),a=e.target.closest("[data-lc]")?.dataset.lc;
+    if(a==="active")return;
+    if(a==="rec"){let r=await sb.from("labs").update({recommended:false}).neq("id",l.id);if(r.error)return fail(r.error);
+      r=await sb.from("labs").update({recommended:true}).eq("id",l.id);if(r.error)return fail(r.error);toast(`${l.name} is now the recommended lab`);return load()}
+    open(l)});
+  box.addEventListener("change",async e=>{const i=e.target.closest('[data-lc="active"]');if(!i)return;const l=labs.find(x=>x.id===+i.closest("[data-lab]").dataset.lab);
+    const{error}=await sb.from("labs").update({active:i.checked}).eq("id",l.id);if(error){i.checked=!i.checked;return fail(error)}
+    l.active=i.checked;drawCards();toast(`${l.name} is ${l.active?"shown to":"hidden from"} patients`)});
+  $("#ltSearch").addEventListener("input",()=>{limit=100;drawRows()});
+  $("#ltRows").addEventListener("input",e=>{if(e.target.name==="web"){const p=e.target.closest("tr").querySelector('[name="price"]');p.value=e.target.value===""?"":nine(+e.target.value)}});
+  $("#ltRows").addEventListener("click",async e=>{if(e.target.id==="ltMore"){limit+=100;drawRows();return}
+    const b=e.target.closest("[data-lt-save]");if(!b)return;const tr=b.closest("tr"),v=n=>tr.querySelector(`[name="${n}"]`);
+    if(v("price").value===""||+v("price").value<0)return toast("Enter a price",false);
+    const upd={website_price:v("web").value===""?null:+v("web").value,price:+v("price").value,turnaround:v("tat").value.trim()||null,active:v("active").checked,updated_at:new Date().toISOString()};
+    b.disabled=true;const{error}=await sb.from("lab_tests").update(upd).eq("id",+tr.dataset.lt);b.disabled=false;if(error)return fail(error);
+    Object.assign(rows.find(r=>r.id===+tr.dataset.lt),upd);toast("Saved");load()});
+  // add one test to the selected lab
+  $("#ltAddForm").addEventListener("focusin",async()=>{if(masters)return;
+    try{masters=await fetchAll(()=>sb.from("tests").select("id,name,category").order("name"))}catch(e){return fail(e)}
+    $("#ltMasters").innerHTML=masters.map(t=>`<option value="${esc(t.name)} #${t.id}">`).join("")});
+  $("#ltAddForm").elements.web.addEventListener("input",e=>{const p=$("#ltAddForm").elements.price;p.value=e.target.value===""?"":nine(+e.target.value)});
+  $("#ltAddForm").onsubmit=async e=>{e.preventDefault();const f=e.target;if(!sel)return toast("Open a lab's price list first",false);
+    const id=+(f.test.value.match(/#(\d+)\s*$/)||[])[1];if(!id)return toast("Pick a test from the list (start typing its name)",false);
+    if(rows.some(r=>r.test_id===id))return toast(`${sel.name} already has this test`,false);
+    const{error}=await sb.from("lab_tests").insert({lab_id:sel.id,test_id:id,website_price:f.web.value===""?null:+f.web.value,price:+f.price.value,turnaround:f.tat.value.trim()||null});
+    if(error)return fail(error);toast(`Added to ${sel.name}`);f.reset();await load();open(labs.find(l=>l.id===sel.id))};
+  load();
+  return{reload:load}}
 async function initAdmin(){const body=$("#bookingRows");if(!body||!await guard(["admin"],"login.html"))return;
   $("#logout").onclick=async e=>{e.preventDefault();await sb.auth.signOut();location.href="login.html"};
   // Sidebar tabs: the URL hash (#bookings, #reports...) decides which section is visible.
@@ -1204,7 +1388,7 @@ async function initAdmin(){const body=$("#bookingRows");if(!body||!await guard([
   $("#cashHandovers").addEventListener("click",async e=>{const b=e.target.closest("[data-receive]");if(!b)return;b.disabled=true;
     const{error}=await sb.from("cash_handovers").update({received:true,received_at:new Date().toISOString()}).eq("id",b.dataset.receive);
     if(error){b.disabled=false;return fail(error)}toast("Marked as received")});
-  topScroll($("#bkTopScroll"),$("#bkTableWrap"));const analytics=adminAnalytics();adminLive();const files=adminFiles();
+  topScroll($("#bkTopScroll"),$("#bkTableWrap"));const analytics=adminAnalytics();adminLive();const files=adminFiles();adminLabs();
   bookingsTable(body,rows=>{adminRows=rows;drawCash();analytics.setRows(rows);files.setRows(rows);
     $("#recentRows").innerHTML=rows.slice(0,5).map(b=>`<tr><td><b>${esc(b.ref)}</b></td><td>${esc(b.patient_name)}</td><td>${fmt(b.collect_date)} · ${esc(b.slot)}</td><td>${money(b.total)}</td><td><span class="pill ${statusMeta(b.status).cls}">${esc(b.status)}</span></td><td>${esc(b.payment)} · ${esc(b.payment_method||"Cash")}</td></tr>`).join("")||'<tr><td colspan="6" class="muted">No bookings yet.</td></tr>';
     const t=today(),live=rows.filter(x=>x.status!=="Cancelled");
@@ -1284,10 +1468,15 @@ async function initAdmin(){const body=$("#bookingRows");if(!body||!await guard([
   const drawTP=()=>{const q=catNorm($("#tpSearch").value),f=$("#tpShow").value;
     const list=TP.filter(t=>(!q||catNorm(`${t.name} ${t.category} ${t.code??""}`).includes(q))&&(f==="all"||(f==="trending"?t.trending:f==="hidden"?!t.active:t.category===f)));
     $("#tpCount").textContent=`${list.length} of ${TP.length} tests`;
-    $("#testRows").innerHTML=list.length?list.slice(0,tpLimit).map(t=>`<tr data-test="${t.id}"><td><input name="name" value="${esc(t.name)}" style="min-width:220px">${t.code?`<small class="muted tp-code">BYOS #${t.code} · ${esc(t.sample||"")}</small>`:""}</td><td><input name="category" value="${esc(t.category)}" style="min-width:150px" list="tpCats"></td><td><input name="price" type="number" min="0" value="${t.price}" style="width:90px"></td><td><input name="mrp" type="number" min="0" value="${t.mrp??""}" style="width:90px"></td><td><input name="turnaround" value="${esc(t.turnaround)}" style="width:110px"></td><td><input name="instructions" value="${esc(t.instructions||"")}" placeholder="e.g. Fast 10-12 hours" style="min-width:220px"></td><td class="tp-tick"><input name="trending" type="checkbox" style="width:auto"${t.trending?" checked":""}${tpHas?"":' disabled title="Run supabase/test_catalog.sql first"'}></td><td class="tp-tick"><input name="active" type="checkbox" style="width:auto"${t.active?" checked":""}></td><td><button class="green" data-save-test style="padding:7px 12px;font-size:12px">Save</button></td></tr>`).join("")
+    $("#testRows").innerHTML=list.length?list.slice(0,tpLimit).map(t=>`<tr data-test="${t.id}"><td><input name="name" value="${esc(t.name)}" style="min-width:220px"><small class="muted tp-code">${esc(t.sample||"")}</small></td><td><input name="category" value="${esc(t.category)}" style="min-width:150px" list="tpCats"></td>${tpLabs?`<td class="tp-labprices">${(tpLabs.by[t.id]||[]).map(r=>`<span class="test-chip${r.active?"":" off"}">${esc(tpLabs.names[r.lab_id]||"")} ${money(r.price)}</span>`).join("")||'<span class="muted">Not at any lab</span>'}</td>`:`<td><input name="price" type="number" min="0" value="${t.price}" style="width:90px"></td><td><input name="mrp" type="number" min="0" value="${t.mrp??""}" style="width:90px"></td>`}<td><input name="turnaround" value="${esc(t.turnaround)}" style="width:110px"></td><td><input name="instructions" value="${esc(t.instructions||"")}" placeholder="e.g. Fast 10-12 hours" style="min-width:220px"></td><td class="tp-tick"><input name="trending" type="checkbox" style="width:auto"${t.trending?" checked":""}${tpHas?"":' disabled title="Run supabase/test_catalog.sql first"'}></td><td class="tp-tick"><input name="active" type="checkbox" style="width:auto"${t.active?" checked":""}></td><td><button class="green" data-save-test style="padding:7px 12px;font-size:12px">Save</button></td></tr>`).join("")
       +(list.length>tpLimit?`<tr><td colspan="9"><button type="button" class="light" id="tpMore">Show ${Math.min(100,list.length-tpLimit)} more (${tpLimit} of ${list.length} shown)</button></td></tr>`:"")
       :`<tr><td colspan="9" class="muted">No tests match.</td></tr>`};
-  const loadTests=async()=>{const{data,error}=await sb.from("tests").select("*").order("trending",{ascending:false}).order("name");
+  let tpLabs=null;
+  const loadTests=async()=>{let data,error;try{data=await fetchAll(()=>sb.from("tests").select("*").order("trending",{ascending:false}).order("name").order("id"))}catch(e){error=e}
+    tpLabs=null;const lr=await sb.from("labs").select("id,name").order("sort");
+    if(!lr.error){try{const lt=await fetchAll(()=>sb.from("lab_tests").select("lab_id,test_id,price,active").order("id"));tpLabs={names:Object.fromEntries(lr.data.map(l=>[l.id,l.name])),by:{}};lt.forEach(r=>(tpLabs.by[r.test_id]=tpLabs.by[r.test_id]||[]).push(r))}catch(_){}}
+    document.querySelectorAll(".tp-p").forEach(el=>el.hidden=!!tpLabs);document.querySelectorAll(".tp-l").forEach(el=>el.hidden=!tpLabs);
+    document.querySelectorAll("#newTestForm .tp-pf input").forEach(i=>i.required=!tpLabs);
     if(error){if(!/trending/.test(error.message))return fail(error);const r=await sb.from("tests").select("*").order("id");if(r.error)return fail(r.error);TP=r.data}else TP=data;
     tpHas=TP.some(t=>"trending" in t);const cats=[...new Set(TP.map(t=>t.category).filter(Boolean))].sort();
     $("#tpCats").innerHTML=cats.map(c=>`<option value="${esc(c)}">`).join("");
@@ -1296,11 +1485,11 @@ async function initAdmin(){const body=$("#bookingRows");if(!body||!await guard([
   $("#tpSearch").addEventListener("input",()=>{tpLimit=100;drawTP()});$("#tpShow").addEventListener("change",()=>{tpLimit=100;drawTP()});
   $("#testRows").addEventListener("click",async e=>{if(e.target.id==="tpMore"){tpLimit+=100;drawTP();return}
     if(!e.target.closest("[data-save-test]"))return;const tr=e.target.closest("tr"),v=n=>tr.querySelector(`[name=${n}]`);
-    const row={name:v("name").value.trim(),category:v("category").value.trim(),price:+v("price").value,mrp:v("mrp").value?+v("mrp").value:null,turnaround:v("turnaround").value.trim(),instructions:v("instructions").value.trim()||null,active:v("active").checked};
+    const row={name:v("name").value.trim(),category:v("category").value.trim(),...(v("price")?{price:+v("price").value,mrp:v("mrp").value?+v("mrp").value:null}:{}),turnaround:v("turnaround").value.trim(),instructions:v("instructions").value.trim()||null,active:v("active").checked};
     if(tpHas)row.trending=v("trending").checked;
     const{error}=await sb.from("tests").update(row).eq("id",+tr.dataset.test);
     if(error)return fail(error);const t=TP.find(x=>x.id===+tr.dataset.test);if(t)Object.assign(t,row);toast("Test saved")});
-  $("#newTestForm").onsubmit=async e=>{e.preventDefault();const f=e.target;const row={name:f.name.value.trim(),category:f.category.value.trim(),price:+f.price.value,mrp:+f.mrp.value,sample:f.sample.value.trim(),turnaround:f.turnaround.value.trim(),instructions:f.instructions.value.trim()||null};
+  $("#newTestForm").onsubmit=async e=>{e.preventDefault();const f=e.target;const row={name:f.name.value.trim(),category:f.category.value.trim(),price:tpLabs?0:+f.price.value,mrp:tpLabs?null:+f.mrp.value,sample:f.sample.value.trim(),turnaround:f.turnaround.value.trim(),instructions:f.instructions.value.trim()||null};
     if(tpHas)row.trending=f.trending.checked;const{error}=await sb.from("tests").insert(row);
     if(error)return fail(error);toast("Test added");f.reset();loadTests()};
   // Booking setting: max bookings per time slot.
@@ -1314,8 +1503,8 @@ async function initAdmin(){const body=$("#bookingRows");if(!body||!await guard([
     const list=adminRows.filter(b=>inRange(by==="booked"?new Date(b.created_at).toLocaleDateString("en-CA"):b.collect_date,from,to));
     if(!list.length)return toast("No bookings in that date range",false);
     downloadCSV(`labmitra-bookings-${from||"start"}-to-${to||"today"}.csv`,
-      ["Booking ref","Sample ID","Booked on","Collection date","Slot","Patient","Age","Gender","Phone","Area","Address","Tests","Amount (Rs)","Status","Payment","Payment method","Cash collected by","Collected on","Razorpay payment ID","Refund ID","Cancelled on","Cancel reason","Report uploaded"],
-      list.map(b=>[b.ref,b.sample_id,fmtDT(b.created_at),b.collect_date,b.slot,b.patient_name,ageText(b.patient_age,b.patient_age_unit,true),b.patient_gender,b.phone,b.area,b.address,
+      ["Booking ref","Sample ID","Lab","Booked on","Collection date","Slot","Patient","Age","Gender","Phone","Area","Address","Tests","Amount (Rs)","Status","Payment","Payment method","Cash collected by","Collected on","Razorpay payment ID","Refund ID","Cancelled on","Cancel reason","Report uploaded"],
+      list.map(b=>[b.ref,b.sample_id,b.lab_name||"",fmtDT(b.created_at),b.collect_date,b.slot,b.patient_name,ageText(b.patient_age,b.patient_age_unit,true),b.patient_gender,b.phone,b.area,b.address,
         b.booking_items.map(i=>i.name).join("; "),b.total,b.status,b.payment,b.payment_method,b.collected_by_name,b.collected_at?fmtDT(b.collected_at):"",
         b.razorpay_payment_id,b.refund_id,b.cancelled_at?fmtDT(b.cancelled_at):"",b.cancel_reason,b.reports.length?"Yes":"No"]));
     toast(`Downloaded ${list.length} bookings`)};
@@ -1344,7 +1533,7 @@ async function initStaff(){const root=$("#staffJobs");if(!root)return;const c=aw
   // One shared staff account, so every active booking is shown (no per-person assignment).
   const drawJobs=rows=>{const data=rows.filter(j=>!["Report ready","Cancelled"].includes(j.status)).sort((a,b)=>String(a.collect_date).localeCompare(String(b.collect_date)));
   $("#jobCount").textContent=data.length;
-  root.innerHTML=data.length?data.map(j=>`<section class="job"><div class="jobhead"><b>${esc(j.ref)}</b><span style="display:flex;gap:10px;align-items:center"><a href="#" class="tl-link" data-timeline="${j.id}" data-ref="${esc(j.ref)}">Timeline</a><span class="pill amber" id="st-${j.id}">${esc(j.status)}</span></span></div>${j.sample_id?`<div class="sample-box"><span>Sample ID · write on every tube</span><b>${esc(j.sample_id)}</b></div>`:""}<div class="patient">${esc(j.patient_name)}${j.patient_age!=null?` <span class="muted" style="font-size:13px;font-weight:600">· ${ageText(j.patient_age,j.patient_age_unit)} · ${esc(j.patient_gender||"")}</span>`:""}</div><div class="detail">Collection: ${fmt(j.collect_date)} · ${esc(j.slot)}<br>Area: ${esc(j.area)}<br>Address: ${esc(j.address)}</div><div class="tests">${j.booking_items.map(i=>esc(i.name)).join(", ")}</div>${j.booking_items.filter(i=>i.instructions).map(i=>prepLine(`${i.name}: ${i.instructions}`)).join("")}${contactRow(j)}${tripBtn(j)?`<div class="trip-row">${tripBtn(j)}</div>`:""}<div id="pay-${j.id}">${payLine(j)}</div><div class="job-actions"><select id="up-${j.id}"><option>Sample collected</option><option>Handed over to lab</option><option>Lab received sample</option><option>Processing started</option></select><button class="green" data-job="${j.id}">Save update</button></div></section>`).join(""):'<div class="empty">No active bookings right now.</div>'};
+  root.innerHTML=data.length?data.map(j=>`<section class="job"><div class="jobhead"><b>${esc(j.ref)}</b><span style="display:flex;gap:10px;align-items:center"><a href="#" class="tl-link" data-timeline="${j.id}" data-ref="${esc(j.ref)}">Timeline</a><span class="pill amber" id="st-${j.id}">${esc(j.status)}</span></span></div>${j.sample_id?`<div class="sample-box"><span>Sample ID · write on every tube</span><b>${esc(j.sample_id)}</b></div>`:""}${j.lab_name?`<div class="lab-take">${FLASK_ICON}<span>Take samples to <b>${esc(j.lab_name)}</b></span></div>`:""}<div class="patient">${esc(j.patient_name)}${j.patient_age!=null?` <span class="muted" style="font-size:13px;font-weight:600">· ${ageText(j.patient_age,j.patient_age_unit)} · ${esc(j.patient_gender||"")}</span>`:""}</div><div class="detail">Collection: ${fmt(j.collect_date)} · ${esc(j.slot)}<br>Area: ${esc(j.area)}<br>Address: ${esc(j.address)}</div><div class="tests">${j.booking_items.map(i=>esc(i.name)+itemLab(i)).join(", ")}</div>${j.booking_items.filter(i=>i.instructions).map(i=>prepLine(`${i.name}: ${i.instructions}`)).join("")}${contactRow(j)}${tripBtn(j)?`<div class="trip-row">${tripBtn(j)}</div>`:""}<div id="pay-${j.id}">${payLine(j)}</div><div class="job-actions"><select id="up-${j.id}"><option>Sample collected</option><option>Handed over to lab</option><option>Lab received sample</option><option>Processing started</option></select><button class="green" data-job="${j.id}">Save update</button></div></section>`).join(""):'<div class="empty">No active bookings right now.</div>'};
   // Section slider: tabs + swipe. The URL hash (#all, #active, #reports) remembers the tab on reload.
   const TABS=["route","active","reports","history"];
   $(".seg-thumb").style.width=`calc((100% - 10px) / ${TABS.length})`;
@@ -1379,9 +1568,9 @@ async function initStaff(){const root=$("#staffJobs");if(!root)return;const c=aw
         const pay=b.payment==="Paid"?'<span class="pill green">Paid</span>':b.payment_method==="Cash"?`<span class="pill amber">Collect ${money(b.total)} cash</span>`:'<span class="pill red">Online · not paid</span>';
         const prep=b.booking_items.some(i=>i.instructions)?'<span class="pill amber">Check fasting</span>':"";
         return`<div class="route-stop"><span class="stop-no">${++n}</span><div class="stop-main">
-          <div class="stop-top"><b>${esc(b.patient_name)}</b>${b.patient_age!=null?`<span class="muted">${ageText(b.patient_age,b.patient_age_unit)} · ${esc(b.patient_gender||"")}</span>`:""}${b.sample_id?`<span class="sample-tag">${esc(b.sample_id)}</span>`:""}</div>
+          <div class="stop-top"><b>${esc(b.patient_name)}</b>${b.patient_age!=null?`<span class="muted">${ageText(b.patient_age,b.patient_age_unit)} · ${esc(b.patient_gender||"")}</span>`:""}${b.sample_id?`<span class="sample-tag">${esc(b.sample_id)}</span>`:""}${b.lab_name?`<span class="lab-tag">${FLASK_ICON}${esc(b.lab_name)}</span>`:""}</div>
           <div class="muted stop-addr">${esc(b.area)} · ${esc(b.address)}</div>
-          <div class="stop-tests">${b.booking_items.map(i=>esc(i.name)).join(", ")}</div>
+          <div class="stop-tests">${b.booking_items.map(i=>esc(i.name)+itemLab(i)).join(", ")}</div>
           <div class="stop-actions">${tripBtn(b)}${digits?`<a class="contact-btn call sm" href="tel:${tel}">${PHONE_ICON}<span>Call</span></a>`:""}<a class="contact-btn map sm" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(addrOf(b))}">${NAV_ICON}<span>Directions</span></a>${pay}${prep}</div>
         </div></div>`}).join("")});
     $("#routeList").innerHTML=(html||`<div class="empty">No visits left ${routeDay?"for tomorrow":"for today"}.</div>`)
@@ -1399,10 +1588,10 @@ async function initStaff(){const root=$("#staffJobs");if(!root)return;const c=aw
     $("#histSummary").innerHTML=`<span><b>${done.length}</b> completed</span><span><b>${list.length-done.length}</b> cancelled</span><span><b>${money(cash.reduce((s,b)=>s+b.total,0))}</b> cash collected</span>`;
     $("#staffHistory").innerHTML=list.length?list.map(b=>{const sm=statusMeta(b.status);
       const pay=b.payment==="Paid"?`Paid · ${esc(b.payment_method||"Cash")}${b.collected_at?" · collected "+fmt(b.collected_at):""}${b.collected_by_name?" by "+esc(b.collected_by_name):""}`:`${esc(b.payment)} · ${esc(b.payment_method||"Cash")}`;
-      return`<section class="job bk" data-status="${sm.cls}"><div class="jobhead"><span class="bk-ref">${esc(b.ref)}</span>${b.sample_id?`<span class="sample-tag">Sample ${esc(b.sample_id)}</span>`:""}<span class="pill ${sm.cls}" style="margin-left:auto">${esc(b.status)}</span></div>
+      return`<section class="job bk" data-status="${sm.cls}"><div class="jobhead"><span class="bk-ref">${esc(b.ref)}</span>${b.sample_id?`<span class="sample-tag">Sample ${esc(b.sample_id)}</span>`:""}${b.lab_name?`<span class="lab-tag">${FLASK_ICON}${esc(b.lab_name)}</span>`:""}<span class="pill ${sm.cls}" style="margin-left:auto">${esc(b.status)}</span></div>
         <div class="patient">${ICONS.user}${esc(b.patient_name)}</div>
         <div class="bk-meta"><div class="bk-row">${ICONS.cal}<span>${fmt(b.collect_date)} · ${esc(b.slot)}</span></div><div class="bk-row">${ICONS.pin}<span>${esc(b.address)}, ${esc(b.area)}</span></div></div>
-        <div class="tests">${b.booking_items.map(i=>`<span class="test-chip">${esc(i.name)}</span>`).join("")}</div>
+        <div class="tests">${b.booking_items.map(i=>`<span class="test-chip">${esc(i.name)}${itemLab(i)}</span>`).join("")}</div>
         <div class="bk-foot"><div class="bk-pay"><span class="${b.payment==="Paid"?"":"muted"}">${pay}</span><b>${money(b.total)}</b></div>
         <span style="display:flex;gap:10px;align-items:center"><a href="#" class="tl-link" data-timeline="${b.id}" data-ref="${esc(b.ref)}">Timeline</a>${b.reports.length?`<a href="#" class="pill green" data-view="${esc(b.reports[0].path)}">View PDF</a>`:""}</span></div></section>`}).join("")
       :`<div class="empty">${histRows.length?"No collections match your search.":"No completed collections yet."}</div>`};
@@ -1563,4 +1752,4 @@ function initTheme(){const make=(cls="")=>{const b=document.createElement("butto
   else if(staffOut){const w=document.createElement("span");w.className="hdr-actions";staffOut.replaceWith(w);w.append(make("on-dark-btn"),staffOut)}
   else document.body.appendChild(make("floating"));
   paintThemeButtons()}
-document.addEventListener("DOMContentLoaded",()=>{initTheme();showAuthLinkError();initNav();initLogin();initStaffLogin();initAdminLogin();initTagline();initHome();initCatalog();initCart();initBooking();initProfile();initAccount();initReceipt();initAdmin();initStaff()});
+document.addEventListener("DOMContentLoaded",()=>{initTheme();showAuthLinkError();initNav();initLogin();initStaffLogin();initAdminLogin();initTagline();initLabPicker();initHome();initCatalog();initCart();initBooking();initProfile();initAccount();initReceipt();initAdmin();initStaff()});

@@ -293,7 +293,7 @@ insert into tests(name,category,sample,price,mrp,turnaround,instructions) values
 ('Vitamin B12','Vitamins','Blood',599,950,'48 hours',null),
 ('Urine Routine & Microscopy','Urine Tests','Urine',149,250,'Same day','Give the first urine of the morning, in the sterile container our staff bring.');
 update tests set trending=true; -- these show on the home page as Popular tests
--- Full BYOS catalogue (598 tests): run supabase/test_catalog.sql after this file.
+-- v2 (multiple labs + Hypatho's 598 tests): run supabase/labs_v2.sql after this file.
 
 -- Live updates between the admin and staff dashboards.
 alter publication supabase_realtime add table bookings, reports, cash_handovers;
